@@ -495,3 +495,143 @@ button:hover {
   background: transparent;
 }
 
+/* ---------------------------------------------------------------------------
+   In-app update: launch prompt + Settings "check for updates" section
+   --------------------------------------------------------------------------- */
+
+.update-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.update-dialog {
+  width: 100%;
+  max-width: 26rem;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 1.1rem 1.15rem 1rem;
+  background: #000;
+  border: 1px solid var(--green);
+  border-radius: 0.6rem;
+  box-shadow: 0 0 1.5rem rgba(0, 255, 0, 0.15);
+}
+
+.update-title {
+  margin: 0 0 0.6rem;
+  font-size: 1.15rem;
+  color: var(--green);
+}
+
+.update-version {
+  margin: 0 0 0.15rem;
+  font-size: 0.95rem;
+  color: var(--green);
+}
+
+.update-current {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  color: var(--green-dim);
+}
+
+.update-force {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #ffaa00;
+  border-radius: 0.4rem;
+  background: #2a1a00;
+  color: #ffcc66;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.update-subtitle {
+  margin: 0 0 0.3rem;
+  font-size: 0.85rem;
+  color: var(--green);
+}
+
+.update-changelog {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--green-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.update-note {
+  margin: 0 0 0.6rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--green-dim);
+}
+
+.update-error {
+  margin: 0 0 0.6rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #ff5555;
+  word-break: break-all;
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.update-actions button {
+  padding: 0.5rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+.update-secondary {
+  border-color: var(--green-dim);
+  color: var(--green-dim);
+  background: transparent;
+}
+
+.update-skip {
+  margin-right: auto;
+}
+
+.update-primary {
+  border-color: var(--green);
+  color: var(--green);
+  background: #003300;
+}
+
+/* Settings → update section */
+.update-section {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--green-border);
+}
+
+.update-heading {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  color: var(--green);
+}
+
+.update-installed {
+  margin: 0 0 0.6rem;
+  font-size: 0.8rem;
+  color: var(--green-dim);
+}
+
+.update-installed strong {
+  color: var(--green);
+}
+

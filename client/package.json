@@ -5,12 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/sync-app-version.mjs",
     "build": "vite build",
+    "version:sync": "node scripts/sync-app-version.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
     "@capacitor/android": "^7.6.9",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/browser": "^7.0.5",
     "@capacitor/core": "^7.6.9",
     "@capacitor/preferences": "^7.0.4",
     "libsodium-wrappers": "^0.7.15",

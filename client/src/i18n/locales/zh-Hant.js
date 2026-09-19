@@ -82,4 +82,29 @@ export default {
   'chat.alertImageTooLarge': '壓縮後圖片仍然過大。請使用較小的圖片。',
   'chat.alertEncryptFailed': '圖片加密失敗。請重試。',
   'chat.alertImageSendFailed': '圖片傳送失敗。請重試。',
+
+  // --- 應用程式內更新 -----------------------------------------------------
+  'update.sectionTitle': '應用程式更新',
+  'update.sectionCopy':
+    'Android 應用程式會在啟動時檢查新版本。你也可以手動檢查——新版本發佈於 GitHub Releases。',
+  'update.installedLabel': '目前版本',
+  'update.checkButton': '檢查更新',
+  'update.checking': '正在檢查…',
+  'update.upToDate': '已是最新版本（{version}）。',
+  'update.checkFailed': '檢查更新失敗，請稍後重試或前往 GitHub Releases 頁面。',
+  'update.title': '發現新版本',
+  'update.forceTitle': '必須更新',
+  'update.newVersion': '新版本 {version}（{code}）',
+  'update.installedVersion': '目前版本：{version}（{code}）',
+  'update.forceCopy': '此更新為強制更新，請安裝後繼續使用 Silencium。',
+  'update.changelog': '更新說明',
+  'update.updateNow': '立即更新',
+  'update.opening': '正在開啟…',
+  'update.later': '稍後',
+  'update.skip': '忽略此版本',
+  'update.exit': '結束',
+  'update.exitFailed': '無法關閉應用程式，請手動結束。',
+  'update.openFailed': '無法開啟下載連結，請手動開啟：{url}',
+  'update.webNote':
+    '應用程式內更新僅適用於 Android 側載版本。網頁端始終執行最新版本。',
 };

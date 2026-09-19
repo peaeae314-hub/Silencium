@@ -13,6 +13,7 @@ import I18nProvider from './i18n/I18nProvider';
 import { useI18n } from './i18n/context';
 import { getLocale, initLocale } from './i18n/locale';
 import { renderWithCode } from './i18n/richText';
+import UpdateProvider from './update/UpdateProvider';
 
 /**
  * Everything that can use `t()`. Split out so the i18n provider can wrap it
@@ -105,14 +106,19 @@ function App() {
 
   return (
     <I18nProvider initialLocale={locale}>
-      <AppShell
-        booted={booted}
-        serverReady={serverReady}
-        onServerSaved={(url) => {
-          applyServerUrl(url);
-          setServerReady(true);
-        }}
-      />
+      {/* Wraps the router so the update prompt can also cover the
+          first-launch Settings screen. The silent check runs once the app has
+          booted (locale + relay URL resolved) — native only. */}
+      <UpdateProvider autoCheck={booted}>
+        <AppShell
+          booted={booted}
+          serverReady={serverReady}
+          onServerSaved={(url) => {
+            applyServerUrl(url);
+            setServerReady(true);
+          }}
+        />
+      </UpdateProvider>
     </I18nProvider>
   );
 }

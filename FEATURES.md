@@ -23,6 +23,14 @@ No accounts, groups, calls, or stored history.
 - Android debug APK via Capacitor (`client/android/`,
   `dist-mobile/Silencium-debug.apk`, app id `app.silencium.chat`) wrapping the
   same web client — see `MOBILE-ANDROID.md`.
+- **In-app update (Android, same protocol as pokemon-handbook):** on launch the
+  app reads a self-hosted `version.json` from
+  [`silencium-releases`](https://github.com/peaeae314-hub/silencium-releases)
+  (GitHub Releases → jsDelivr → fastly → raw fallback, highest `versionCode`
+  wins), compares it with the installed `versionCode`, and offers a localized
+  (en / zh-Hans / zh-Hant) soft or forced dialog that opens the `apkUrl` for a
+  sideload install; "Later" snoozes and "Skip this version" persists. Web builds
+  skip the check — see `MOBILE-ANDROID.md § In-app update`.
 - Ciphertext-only relay with no plaintext image path and no database.
 
 ## 🛠️ Planned / in progress

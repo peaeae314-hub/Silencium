@@ -420,3 +420,87 @@ and the app became multilingual.
 - `tools/smoke-test.cjs` **18 passed / 0 failed** with `SILENCIUM_EXPECT_SPA=1`
   (relay/E2EE/room-cap path untouched; no PWA/iOS work, tunnel not reopened).
 
+### In-app update — same protocol as pokemon-handbook (silencium-releases)
+
+Follow-up: the Capacitor Android client now self-updates from
+[`silencium-releases`](https://github.com/peaeae314-hub/silencium-releases)
+instead of requiring a manual reinstall. Protocol copied from the
+pokemon-handbook Flutter client (`lib/features/update/*`) and its
+`应用内更新-托管说明.md`; **no new protocol was invented**.
+
+**Done**
+
+- **`client/src/update/`** — `updateLogic.js` (pure: `isNewer`, `shouldPrompt`,
+  candidate URLs + CDN cache-bust, `preferHighestVersionCode`, changelog pick),
+  `updateManifest.js` (`version.json` parser: `versionCode`, `versionName`,
+  `apkUrl`, `force`, `changelogZh`/`En`/`ZhHant`), `updateService.js`
+  (multi-source GET, installed version, skip/snooze, opening the APK link),
+  `updateConfig.js`, `updateContext.js`, `UpdateProvider.jsx`,
+  `UpdatePromptDialog.jsx`, generated `appVersion.js`. Styled in
+  `src/src/styles/hacker-theme.css` (`.update-*`).
+- **Multi-URL fallback, highest `versionCode` wins:** GitHub Releases
+  `latest/download/version.json` → `cdn.jsdelivr.net` → `fastly.jsdelivr.net` →
+  `raw.githubusercontent.com`, deduped, jsDelivr entries cache-busted with
+  `?t=<epochMs>`. A `VITE_UPDATE_MANIFEST_URL` build-time override replaces the
+  primary. The GET uses Capacitor's core **`CapacitorHttp`** so the WebView is
+  not CORS-blocked (GitHub release assets send no `Access-Control-Allow-Origin`);
+  on web it degrades to `fetch` and the CORS-friendly CDNs carry the check.
+- **Installed version:** `@capacitor/app` `App.getInfo()` on device, with the
+  `client/android/app/build.gradle` numbers baked in at build time as the
+  fallback (`npm run version:sync` → `src/update/appVersion.js`, wired into
+  `prebuild`). `versionCode 1 / "1.0"` → **`versionCode 2 / "1.1.0"`**.
+- **Launch check** runs once per cold start after locale + relay-URL boot
+  (native only; the web build skips it, or a "sideload Android only" note is
+  shown). Prompt: **Update** (opens `apkUrl` via `@capacitor/browser`, i.e. the
+  system browser/Custom Tab — never navigates the app away), **Later**
+  (12 h snooze, `silencium.update-snooze`) and **Skip this version**
+  (`silencium.update-ignored-version-code`, until a larger code appears).
+  `force: true` → not dismissible, no Later/Skip, plus **Exit** on Android.
+- **i18n:** 24 new keys in all three dictionaries (en / zh-Hans / zh-Hant) for
+  the dialog, the buttons and the Settings section; the changelog is picked per
+  locale with cross-language fallback.
+- **Settings → App updates:** installed version, manual **Check for updates**
+  (ignores skip/snooze; separates *fetch failed* from *up to date*), and the web
+  sideload note. New Capacitor plugins `@capacitor/app` 7.1.2 and
+  `@capacitor/browser` 7.0.5 (synced into `capacitor.settings.gradle` /
+  `capacitor.build.gradle`).
+- **Docs:** `MOBILE-ANDROID.md § In-app update (应用内更新)` — manifest schema +
+  sources, client behaviour, and the **publish steps** (bump `versionCode` →
+  build APK → upload Release → update `version.json` on `main` **and** attach it
+  to the Release → verify with `UPDATE_LIVE=1`). `FEATURES.md` updated.
+- **APK rebuilt** at `dist-mobile/Silencium-debug.apk` — 4,839,839 bytes
+  (≈4.6 MB), SHA-256 `7fe1412944826544a338ea0dd65596818742dade70b85b3a8f442b7db134a0dd`,
+  `aapt2` badging `versionCode='2' versionName='1.1.0'`, minSdk 23 / targetSdk 35,
+  plugins App/Browser/Preferences registered, bundles `index-BlypCdGY.js` (the
+  production build with the default GitHub manifest URL — the e2e-only local
+  override is **not** in the APK).
+
+**Verification (in-app update)**
+
+- `node tools/update-logic-test.mjs` — **36 passed / 0 failed** (compare, skip,
+  snooze incl. force overrides, candidate dedupe/cache-bust/order, highest-code
+  win, changelog fallback, parser rejects, installed-label, generated version).
+  `UPDATE_LIVE=1` adds the four live manifests — **41 passed / 0 failed**
+  (all four parse and agree on `versionCode`).
+- `node tools/update-e2e-test.mjs` — **39 passed / 0 failed** in headless Chrome
+  against the real built SPA (test build with the manifest override): launch
+  dialog (en/zh-Hans/zh-Hant copy + changelog), Later snooze survives a reload,
+  Skip persists and a larger code still prompts, `force` drops Later/Skip and is
+  not dismissible, Update hands the exact `apkUrl` to `window.open`, up-to-date →
+  no dialog, Settings manual check says "latest version", primary source down →
+  CDN fallbacks still answer, **all sources blocked → the distinct "could not
+  check" message** (not "up to date").
+- `npx eslint src` exit 0 · `npm run build` exit 0.
+- `npx cap sync android` (3 plugins) + `./gradlew assembleDebug` →
+  `BUILD SUCCESSFUL`.
+- `tools/smoke-test.cjs` **18 passed / 0 failed** with `SILENCIUM_EXPECT_SPA=1`
+  — relay / E2EE / 2-person room cap / relay settings untouched.
+
+**Skipped / out of scope**
+
+- **Play Store, iOS, crypto changes, reopening the tunnel: untouched.**
+- Android was **not** launched on a device or emulator here; the native path is
+  covered by the unit + headless tests plus APK static verification, with the
+  device checklist in `MOBILE-ANDROID.md § Manual check list (APK)` (items
+  13–16 are the new update steps).
+

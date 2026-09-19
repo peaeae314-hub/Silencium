@@ -7,13 +7,14 @@ same Vite build and talks to a **relay URL you enter in the app**.
 | | |
 |---|---|
 | **APK** | `dist-mobile/Silencium-debug.apk` |
-| **Size** | 5,099,365 bytes (≈ 4.9 MB) |
-| **SHA-256** | `e22263cfc0f62ac29d3d5f1cd23dd1c91b315074f4feabee02af48ae25428df6` |
+| **Size** | 4,839,839 bytes (≈ 4.6 MB) |
+| **SHA-256** | `7fe1412944826544a338ea0dd65596818742dade70b85b3a8f442b7db134a0dd` |
 | **App id** | `app.silencium.chat` |
 | **App name** | Silencium |
-| **Version** | 1.0 (versionCode 1) |
+| **Version** | 1.1.0 (versionCode 2) — `client/android/app/build.gradle` |
 | **min / target SDK** | 23 / 35 (Android 6.0+) |
 | **Build type** | `debug` (debug-signed, sideload only) |
+| **Plugins** | `@capacitor/app` 7.1.2, `@capacitor/browser` 7.0.5, `@capacitor/preferences` 7.0.4 |
 
 ## Install (sideload)
 
@@ -162,11 +163,123 @@ particular device/OEM refuses the chooser, text chat continues to work.
 - **The relay URL is device-local, plaintext config**, not a secret. Changing it
   invalidates the current room (the key exchange is per-connection).
 - **No PWA work** was done, and **iOS is out of scope**.
-- **Debug build, no auto-update.** Rebuild and reinstall to update; not
-  Play-Store signed. `client/android/` holds the Gradle project.
+- **Debug build, sideload only.** Not Play-Store signed; `client/android/` holds
+  the Gradle project. Updates ship **in-app** (see
+  [In-app update](#in-app-update-应用内更新) below) but the APK itself is still
+  debug-signed, so every build must keep the same signing key to overlay-install.
 - Gradle wrapper pinned to **8.12** (the template asks for 8.11.1) to reuse the
   Gradle distribution already cached on the build machine. Any Gradle ≥ 8.9
   works with the AGP 8.7.2 template.
+
+## In-app update (应用内更新)
+
+The Android app checks a self-hosted `version.json` on launch and offers to
+install a newer build. This is the **same protocol as the pokemon-handbook
+client** (Flutter `lib/features/update/*`): remote `versionCode` vs the
+installed Android `versionCode`, a soft/forced dialog, and "skip this version"
+persistence. No Play Store, no iOS.
+
+| | |
+|---|---|
+| **Manifest** | `https://github.com/peaeae314-hub/silencium-releases/releases/latest/download/version.json` |
+| **Hosting repo** | <https://github.com/peaeae314-hub/silencium-releases> |
+| **Manifest schema** | `versionCode`, `versionName`, `apkUrl`, `force`, `changelogZh` (+ `changelogEn`, `changelogZhHant`) |
+| **Client code** | `client/src/update/` |
+| **Unit tests** | `node tools/update-logic-test.mjs` (+ `UPDATE_LIVE=1` parses the real manifests) |
+| **E2E test** | `node tools/update-e2e-test.mjs` (headless Chrome, 39 checks) |
+
+### Manifest sources (multi-URL fallback)
+
+`UpdateService` tries the URLs in order, deduped, and keeps the valid manifest
+with the **highest `versionCode`** — a stale jsDelivr `@main` blob therefore
+never hides a newer release. jsDelivr URLs get a `?t=<epochMs>` cache-buster.
+
+1. `VITE_UPDATE_MANIFEST_URL` build-time override, else the GitHub Releases
+   `latest/download/version.json` primary
+2. `https://cdn.jsdelivr.net/gh/peaeae314-hub/silencium-releases@main/version.json`
+3. `https://fastly.jsdelivr.net/gh/peaeae314-hub/silencium-releases@main/version.json`
+4. `https://raw.githubusercontent.com/peaeae314-hub/silencium-releases/main/version.json`
+
+The GET goes through Capacitor's core **`CapacitorHttp`** plugin, so the WebView
+is not blocked by CORS (GitHub release assets do not send
+`Access-Control-Allow-Origin`; jsDelivr/raw do). On the web build the plugin
+falls back to `fetch`, and the CDN fallbacks carry the check.
+
+### Client behaviour
+
+1. **After boot** (locale + relay URL resolved) the native app runs one silent
+   check per cold start. Web builds skip it — an explicitly configured
+   `VITE_UPDATE_MANIFEST_URL` also enables it on web (that is how the e2e test
+   drives the real path).
+2. Installed version: `@capacitor/app` `App.getInfo()` (`versionName` /
+   `versionCode` from the APK), falling back to the numbers baked into
+   `client/src/update/appVersion.js` — generated from
+   `client/android/app/build.gradle` by `npm run version:sync` (part of
+   `npm run build`).
+3. `remote.versionCode > installed` → a themed dialog (en / zh-Hans / zh-Hant)
+   with the changelog for the active locale (falling back to the other
+   languages): **Update**, **Later**, **Skip this version**.
+   - **Update** hands `apkUrl` to the system browser via `@capacitor/browser`
+     (Custom Tab), where the download + sideload install flow works; the app
+     itself never navigates away.
+   - **Later** snoozes that `versionCode` for 12 h (`silencium.update-snooze`),
+     so cold starts do not nag.
+   - **Skip this version** persists the skip (`silencium.update-ignored-version-code`);
+     only a **larger** `versionCode` prompts again.
+   - `force: true` → **Update required**: no Later/Skip, not dismissible
+     (backdrop/Esc ignored), plus **Exit** on Android.
+4. Preferences use Capacitor **Preferences** on device and `localStorage` on
+   web — the same dual-storage pattern as the relay URL and locale.
+5. **Settings → App updates**: installed version, manual **Check for updates**
+   (ignores skip/snooze), and distinct copy for *fetch failed* vs *up to date*.
+   On the web it also shows the "in-app updates are for the Android sideload
+   build" note.
+
+### Publishing a release (发版步骤)
+
+1. **Bump** `versionCode` (must increase) and `versionName` in
+   `client/android/app/build.gradle` — e.g. `versionCode 3` / `versionName
+   "1.1.1"`. This is the single source of truth; `npm run build` regenerates
+   `client/src/update/appVersion.js` from it.
+2. **Build the APK** (the web build is copied in by `cap sync`, so the bundle
+   always matches the APK):
+   ```bash
+   cd /workspace/Silencium/client
+   npm run build          # runs version:sync first, then Vite -> client/dist
+   npx cap sync android   # copy dist -> android/app/src/main/assets/public
+   cd android && ./gradlew assembleDebug
+   cp app/build/outputs/apk/debug/app-debug.apk /workspace/Silencium/dist-mobile/Silencium-debug.apk
+   ```
+3. **Upload the APK to a new GitHub Release** in `silencium-releases`
+   (tag `v<versionName>`, attach `Silencium-debug.apk`).
+4. **Update `version.json` on `main`** in `silencium-releases` **and attach the
+   same `version.json` to the Release** (the Release asset is what the primary
+   `latest/download/version.json` URL serves):
+   ```json
+   {
+     "versionCode": 3,
+     "versionName": "1.1.1",
+     "apkUrl": "https://github.com/peaeae314-hub/silencium-releases/releases/download/v1.1.1/Silencium-debug.apk",
+     "force": false,
+     "changelogZh": "修复……",
+     "changelogEn": "Fix …",
+     "changelogZhHant": "修復……"
+   }
+   ```
+   `versionCode` must be **greater** than the installed build or nothing is
+   prompted. `apkUrl` must be the HTTPS download URL of the APK attached in
+   step 3. Set `force: true` only for a breaking release.
+5. Verify: `cd /workspace/Silencium && UPDATE_LIVE=1 node tools/update-logic-test.mjs`
+   (all four sources must parse and agree).
+6. **Signing:** overlay-install requires the **same applicationId + same signing
+   key**. Switching keystores forces an uninstall/reinstall. The debug APK is
+   debug-signed; keep using that key (or adopt one fixed release keystore for
+   both the APK and its updates).
+
+> jsDelivr/raw read the repo's `main` branch, so step 4 keeps them fresh; the
+> primary GitHub Release URL stays correct as long as `version.json` is attached
+> to the newest Release. Trust the *highest* `versionCode` across sources, which
+> the client already does.
 
 ## Rebuilding the APK
 
@@ -175,27 +288,31 @@ export ANDROID_HOME=/home/box/sdk/android          # platform 35 + build-tools 3
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
 
 cd /workspace/Silencium/client
-npm run build                                       # Vite -> client/dist
+npm run build                                       # version:sync + Vite -> client/dist
 npx cap sync android                                # copy web assets into android/
 cd android && ./gradlew assembleDebug               # -> app/build/outputs/apk/debug/app-debug.apk
 cp app/build/outputs/apk/debug/app-debug.apk /workspace/Silencium/dist-mobile/Silencium-debug.apk
 ```
 
 Environment used: JDK 21, Android SDK platform 35 (build-tools 35.0.0), Gradle
-8.12, Node 22, Capacitor 7.6.9, `@capacitor/preferences` 7.0.4.
+8.12, Node 22, Capacitor 7.6.9, `@capacitor/app` 7.1.2,
+`@capacitor/browser` 7.0.5, `@capacitor/preferences` 7.0.4.
 
 Configuration lives in `client/capacitor.config.json`
 (`appId`, `appName: "Silencium"`, `webDir: "dist"`, `server.androidScheme:
-"https"`, `android.allowMixedContent: true`).
+"https"`, `android.allowMixedContent: true`). The update check needs no extra
+config there: `CapacitorHttp` is a core plugin that is always registered, and
+`@capacitor/browser` needs no plugin options.
 
 ## Manual check list (APK)
 
 The APK was built and statically verified in this environment (package id,
-label, `INTERNET`, `usesCleartextTraffic=true`, bundled web assets), and the
-same JS bundle was exercised in headless Chrome over CDP (settings
-save/persist/reset, validation, unreachable-relay banner). It was **not**
-launched on a device here — no working Android emulator was available — so treat
-this list as the acceptance path.
+label, `INTERNET`, `usesCleartextTraffic=true`, bundled web assets, versionCode
+2 / versionName 1.1.0, the three plugins registered), and the same JS bundle was
+exercised in headless Chrome over CDP (settings save/persist/reset, validation,
+unreachable-relay banner, and the full update flow — see `tools/update-e2e-test.mjs`).
+It was **not** launched on a device here — no working Android emulator was
+available — so treat this list as the acceptance path.
 
 1. Launch the app with no saved URL → the Settings screen is shown (no silent
    `localhost`).
@@ -219,5 +336,18 @@ this list as the acceptance path.
     app → it is still 简体中文. Repeat for **繁體中文**, then **English**.
 12. Enter a bad join value with 简体中文 selected → the validation error is in
     Chinese.
-13. On the web build (`http://localhost:3001`), confirm `npm run build` output
-    still renders and `tools/smoke-test.cjs` is still green.
+13. **Update prompt:** publish a `version.json` whose `versionCode` is greater
+    than the installed one, then cold-start the APK → the dialog appears with
+    the changelog in the device language; **Update** opens the APK URL in the
+    browser/Custom Tab; **Later** hides it until the 12 h snooze expires;
+    **Skip this version** keeps it hidden until a larger `versionCode` is
+    published.
+14. **Forced update:** set `"force": true` with a higher `versionCode` →
+    restart → "Update required" with no Later/Skip; Esc/backdrop do not dismiss
+    it; **Exit** leaves the app.
+15. **Manual check:** Settings → **App updates** shows `1.1.0 (2)`; the button
+    reports "latest version" when the published code is not newer, and the
+    distinct "could not check" message when every source fails (airplane mode).
+16. On the web build (`http://localhost:3001`), confirm `npm run build` output
+    still renders, the update section shows the "Android sideload" note, and
+    `tools/smoke-test.cjs` is still green.

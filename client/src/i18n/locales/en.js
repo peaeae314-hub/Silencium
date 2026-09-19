@@ -86,4 +86,32 @@ export default {
     'Image too large after compression. Please use a smaller image.',
   'chat.alertEncryptFailed': 'Failed to encrypt image. Please try again.',
   'chat.alertImageSendFailed': 'Image could not be sent. Please try again.',
+
+  // --- In-app update ----------------------------------------------------
+  'update.sectionTitle': 'App updates',
+  'update.sectionCopy':
+    'The Android app checks for a new build when it starts. You can also check on demand — new builds are published on GitHub Releases.',
+  'update.installedLabel': 'Installed version',
+  'update.checkButton': 'Check for updates',
+  'update.checking': 'Checking…',
+  'update.upToDate': 'You are on the latest version ({version}).',
+  'update.checkFailed':
+    'Could not check for updates. Try again later or open the GitHub Releases page.',
+  'update.title': 'Update available',
+  'update.forceTitle': 'Update required',
+  'update.newVersion': 'New version {version} ({code})',
+  'update.installedVersion': 'Installed: {version} ({code})',
+  'update.forceCopy':
+    'This update is required. Please install it to keep using Silencium.',
+  'update.changelog': "What's new",
+  'update.updateNow': 'Update',
+  'update.opening': 'Opening…',
+  'update.later': 'Later',
+  'update.skip': 'Skip this version',
+  'update.exit': 'Exit',
+  'update.exitFailed': 'Could not close the app. Close it manually.',
+  'update.openFailed':
+    'Could not open the download link. Open it manually: {url}',
+  'update.webNote':
+    'In-app updates are for the Android sideload build. On the web you already run the latest build.',
 };
