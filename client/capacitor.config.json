@@ -1,0 +1,11 @@
+{
+  "appId": "app.silencium.chat",
+  "appName": "Silencium",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

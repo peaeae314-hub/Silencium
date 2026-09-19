@@ -1,40 +1,21 @@
 # Screenshots
 
-This directory contains screenshots of the Silencium application for the GitHub README.
+Optional screenshots for documentation or the repository page. **No screenshots
+are committed yet** — this file just describes what would go here.
 
-## Required Screenshots
+## Suggested screenshots
 
-Please add the following screenshots to this directory:
+1. **home-page.png** — landing page with the Create Chat Room button.
+2. **chat-room.png** — an active room with encrypted messages and the
+   "🔒 Encryption Active" status.
+3. **image-sharing.png** — an encrypted image rendered inline in the chat.
 
-1. **home-page.png** - Landing page with security features and create room button
-2. **chat-room.png** - Active chat room with encrypted messaging
-3. **image-sharing.png** - Secure image sharing with encryption
-4. **image-viewer.png** - Full screen image viewer with zoom and pan
+There is intentionally no "fullscreen image viewer" screenshot: that feature was
+cut for the MVP (`CanvasImageRenderer` renders inline only), and there is no
+screenshot-prevention feature to show.
 
-## Screenshot Guidelines
+## Guidelines
 
-- **Resolution**: 1280x720 or higher
-- **Format**: PNG or JPG
-- **Quality**: High quality, clear and readable
-- **Content**: Show the key features and UI elements clearly
-
-## Example Screenshots
-
-The screenshots should showcase:
-- The dark terminal-style interface
-- Green text and orange padlock branding
-- Chat functionality with encrypted messages
-- Image sharing capabilities
-- Full-screen image viewer
-- Room management features
-
-## Adding Screenshots
-
-1. Take screenshots of your application
-2. Save them with the exact filenames listed above
-3. Place them in this directory
-4. The README.md will automatically display them
-
----
-
-**Note**: These are placeholder instructions. Replace this content with actual screenshots when ready. 
+- Resolution: 1280×720 or higher.
+- Format: PNG or JPG.
+- Don't include real conversation content or identifiable participants.

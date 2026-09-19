@@ -1,3 +1,13 @@
 node_modules/
 dist/
 .env
+
+# Capacitor / Android local builds
+dist-mobile/
+*.apk
+client/android/app/build/
+client/android/.gradle/
+client/android/local.properties
+client/android/capacitor-cordova-android-plugins/build/
+client/android/.idea/
+*.iml

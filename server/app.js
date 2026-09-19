@@ -1,5 +1,7 @@
 const express = require('express');
 const http = require('http');
+const path = require('path');
+const fs = require('fs');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const roomManager = require('./rooms/roomManager');
@@ -15,16 +17,59 @@ const devLog = (...args) => {
 const app = express();
 const server = http.createServer(app);
 
+// Payload limits — kept aligned with the client (see ChatRoom.jsx):
+//   client rejects encrypted images > 3 MB, so the relay accepts 4 MB and the
+//   socket transport frame is 5 MB. This leaves headroom for Socket.IO framing
+//   and means a valid client payload is never silently dropped by the transport.
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_SOCKET_FRAME_BYTES = 5 * 1024 * 1024;
+
 const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
-  maxHttpBufferSize: 3 * 1024 * 1024  // 3 MB to handle compressed images safely
+  maxHttpBufferSize: MAX_SOCKET_FRAME_BYTES
 });
 
 
 app.use(cors());
-app.get('/', (req, res) => res.send('Silencium server running'));
 
-const roomCountdowns = {}; // roomId => { startTime, timeout }
+// Liveness probe — works in both dev and production.
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', mode: isDev ? 'development' : 'production' });
+});
+
+// B5 — production static serving.
+// `NODE_ENV=production node app.js` serves the built client (`client/dist`) from
+// this same process, so there is no separate frontend server. Socket.IO is
+// attached to the same HTTP server and handles /socket.io before Express sees
+// the request, so the SPA fallback below never shadows it.
+const CLIENT_DIST = path.resolve(__dirname, '..', 'client', 'dist');
+const CLIENT_INDEX = path.join(CLIENT_DIST, 'index.html');
+
+if (isDev) {
+  app.get('/', (req, res) => res.send('Silencium server running'));
+} else if (fs.existsSync(CLIENT_INDEX)) {
+  // Hashed JS/CSS assets plus index.html.
+  app.use(express.static(CLIENT_DIST));
+
+  // SPA fallback: any unmatched GET (e.g. /chat?room=… on a hard refresh)
+  // returns index.html so client-side routing can take over.
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    res.sendFile(CLIENT_INDEX, (err) => {
+      if (err) next(err);
+    });
+  });
+
+  devLog(`📦 Serving built client from ${CLIENT_DIST}`);
+} else {
+  console.warn(
+    `⚠️  NODE_ENV=production but no client build found at ${CLIENT_DIST}.\n` +
+      '   Run `cd client && npm run build`, then restart the server.'
+  );
+  app.get('/', (req, res) =>
+    res.status(503).send('Client build missing. Run `cd client && npm run build`, then restart.')
+  );
+}
 
 io.on('connection', (socket) => {
   devLog('🟢 New client connected:', socket.id);
@@ -36,17 +81,21 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Check if user is already in a room
+    // If this socket is already in a different room, leave it first.
+    // roomManager owns the rooms map, so route this through it (B9 fix:
+    // app.js must never touch `rooms` directly).
     if (socket.data.roomId && socket.data.roomId !== roomId) {
-      // Leave previous room first
-      const prevRoomId = socket.data.roomId;
-      const prevRoomUsers = roomManager.getUsers(prevRoomId);
-      const userIndex = prevRoomUsers.indexOf(socket.id);
-      if (userIndex !== -1) {
-        prevRoomUsers.splice(userIndex, 1);
-        if (prevRoomUsers.length === 0) {
-          delete rooms[prevRoomId];
+      const prevRoomId = roomManager.leaveRoom(socket.id);
+      if (prevRoomId) {
+        socket.leave(prevRoomId);
+        if (roomManager.getUsers(prevRoomId).length > 0) {
+          io.to(prevRoomId).emit('room-destroyed', {
+            message: 'A user left the room. Room has been destroyed.',
+            leftUserId: socket.id
+          });
+          io.in(prevRoomId).socketsLeave(prevRoomId);
         }
+        roomManager.deleteRoom(prevRoomId);
       }
     }
 
@@ -69,64 +118,41 @@ io.on('connection', (socket) => {
 
     setTimeout(() => {
       io.to(roomId).emit('system-message', msg);
-      io.to(roomId).emit('room-update', result.users);
-      if (result.users.length === 2) {
-        io.to(roomId).emit('start-chat');
-      }
     }, 100);
   });
-
-  // 🖼️ IMAGE MESSAGE HANDLER (moved outside join-room)
-  socket.on('image-message', (data) => {
-      const roomId = data.roomId || socket.data.roomId;
-      if (!data.image?.startsWith('data:image/') || Buffer.byteLength(data.image, 'utf-8') > 3 * 1024 * 1024) {
-        console.warn(`❌ Blocked oversized or invalid image from ${socket.id}`);
-        return;
-      }
-
-      if (!roomId || !data.image) return;
-
-      const timestamp = new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-
-      const messagePayload = {
-        image: data.image,
-        name: data.name,
-        type: data.type,
-        sender: socket.id,
-        timestamp
-      };
-
-      // send to everyone (sender + receiver)
-      io.to(roomId).emit('receive-image', messagePayload);
-    });
 
   // 🔐 ENCRYPTED IMAGE MESSAGE HANDLER
   socket.on('send-encrypted-image', (data) => {
     const roomId = data.roomId || socket.data.roomId;
     if (!roomId || !data.encrypted || !data.nonce) {
       console.warn(`❌ Invalid encrypted image data from ${socket.id}`);
+      socket.emit('image-error', 'Image could not be sent. Please try again.');
+      return;
+    }
+
+    // Binary frames arrive as Buffer/Uint8Array/ArrayBuffer; tolerate the legacy
+    // number-array form too. `.byteLength` covers binary, `.length` the array.
+    const byteLength = data.encrypted.byteLength ?? data.encrypted.length;
+    if (byteLength > MAX_IMAGE_BYTES) {
+      console.warn(`❌ Blocked oversized encrypted image from ${socket.id}: ${byteLength} bytes`);
+      socket.emit('image-error', 'Image is too large to send. Please use a smaller image.');
       return;
     }
 
     try {
       devLog(`📤 Processing encrypted image from ${socket.id} in room ${roomId}`);
-      devLog(`📊 Image size: ${data.encrypted.length} bytes`);
+      devLog(`📊 Image size: ${byteLength} bytes`);
 
-      const messagePayload = {
+      socket.to(roomId).emit('receive-encrypted-image', {
         encrypted: data.encrypted,
         nonce: data.nonce,
         name: data.name,
         type: data.type,
-      };
-
-      // send encrypted image to other users in the room
-      socket.to(roomId).emit('receive-encrypted-image', messagePayload);
+      });
       devLog(`✅ Encrypted image sent to room ${roomId}`);
     } catch (error) {
       console.error(`❌ Error processing encrypted image from ${socket.id}:`, error);
+      socket.emit('image-error', 'Image could not be sent. Please try again.');
     }
   });
 
@@ -146,36 +172,6 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('receive-message', { encrypted, nonce });
   });
 
-  // ⏳ START INACTIVITY COUNTDOWN
-  socket.on('startInactivityCountdown', () => {
-    const roomId = socket.data.roomId;
-    if (!roomId || roomCountdowns[roomId]) return;
-
-    const startTime = Date.now();
-    devLog(`⏱️ Inactivity countdown started in room ${roomId}`);
-
-    const timeout = setTimeout(() => {
-      devLog(`💥 Room ${roomId} destroyed due to inactivity`);
-      io.to(roomId).emit('roomDestructed', '⚠️ Room destroyed due to user inactivity.');
-      io.in(roomId).socketsLeave(roomId);
-      delete roomCountdowns[roomId];
-    }, 10 * 60 * 1000); // 10 minutes
-
-    roomCountdowns[roomId] = { startTime, timeout };
-    io.to(roomId).emit('start-inactivity-countdown', { startTime });
-  });
-
-  // 🔁 CANCEL INACTIVITY COUNTDOWN
-  socket.on('cancelInactivityCountdown', () => {
-    const roomId = socket.data.roomId;
-    if (!roomId || !roomCountdowns[roomId]) return;
-
-    clearTimeout(roomCountdowns[roomId].timeout);
-    delete roomCountdowns[roomId];
-    devLog(`🔄 Inactivity countdown cancelled in room ${roomId}`);
-    io.to(roomId).emit('cancel-inactivity-countdown');
-  });
-
   // 🚪 LEAVE ROOM
   socket.on('leave-room', ({ roomId }) => {
     devLog(`🚪 ${socket.id} manually left room ${roomId}`);
@@ -191,10 +187,6 @@ io.on('connection', (socket) => {
         if (users.length === 0) {
           // No users left, delete the room
           roomManager.deleteRoom(actualRoomId);
-          if (roomCountdowns[actualRoomId]) {
-            clearTimeout(roomCountdowns[actualRoomId].timeout);
-            delete roomCountdowns[actualRoomId];
-          }
         } else {
           // Notify remaining users and destroy the room
           devLog(`💥 Room ${actualRoomId} destroyed because user ${socket.id} left`);
@@ -206,10 +198,6 @@ io.on('connection', (socket) => {
           io.in(actualRoomId).socketsLeave(actualRoomId);
           // Clear the room
           roomManager.deleteRoom(actualRoomId);
-          if (roomCountdowns[actualRoomId]) {
-            clearTimeout(roomCountdowns[actualRoomId].timeout);
-            delete roomCountdowns[actualRoomId];
-          }
         }
       }
     }
@@ -227,14 +215,9 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('system-message', msg);
 
       const users = roomManager.getUsers(roomId);
-      io.to(roomId).emit('room-update', users);
 
       if (users.length === 0) {
         devLog(`💣 No users left in room ${roomId}`);
-        if (roomCountdowns[roomId]) {
-          clearTimeout(roomCountdowns[roomId].timeout);
-          delete roomCountdowns[roomId];
-        }
       } else {
         // Notify remaining users that someone left and destroy the room
         devLog(`💥 Room ${roomId} destroyed because user ${socket.id} left`);
@@ -246,10 +229,6 @@ io.on('connection', (socket) => {
         io.in(roomId).socketsLeave(roomId);
         // Clear the room
         roomManager.deleteRoom(roomId);
-        if (roomCountdowns[roomId]) {
-          clearTimeout(roomCountdowns[roomId].timeout);
-          delete roomCountdowns[roomId];
-        }
       }
 
       devLog(`🔴 ${socket.id} left room ${roomId}`);

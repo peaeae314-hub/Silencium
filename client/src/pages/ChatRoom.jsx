@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { socket } from '../utils/socket';
+import { socket, getSocketUrl } from '../utils/socket';
+import { getShareOrigin } from '../utils/serverUrl';
 import {
   initSodium,
   generateKeyPair,
@@ -9,19 +10,34 @@ import {
 import { CryptoWorker } from '../crypto/workerWrapper';
 import CanvasImageRenderer from '../components/CanvasImageRenderer';
 import '../src/styles/hacker-theme.css';
-import '../utils/animations';
 import useAutoScroll from '../src/hooks/useAutoScroll';
+import { useI18n } from '../i18n/context';
+import { renderWithCode } from '../i18n/richText';
+
+// Payload limits — kept aligned with server/app.js (MAX_IMAGE_BYTES /
+// MAX_SOCKET_FRAME_BYTES). Images are compressed below, encrypted, then sent
+// as binary frames, so these limits describe the actual bytes on the wire.
+const MAX_IMAGE_FILE_BYTES = 6 * 1024 * 1024;
+const MAX_ENCRYPTED_IMAGE_BYTES = 3 * 1024 * 1024;
 
 export default function ChatRoom() {
-  const [timeLeft, setTimeLeft] = useState(null);
-  const timerStartRef = useRef(null);
+  const { t } = useI18n();
+  // Socket listeners are registered once per room; `tRef` lets those long-lived
+  // callbacks translate without re-running the setup effect on every locale
+  // change (which would re-register listeners mid-conversation).
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
+
   const cryptoWorkerRef = useRef(null);
   const joinedRef = useRef(false);
-  const myPublicKeySent = useRef(false);
   const receivedKey = useRef(null);
   const sharedKeyRef = useRef(null);
   const hasSharedKeyRef = useRef(false);
   const [mySocketId, setMySocketId] = useState('');
+  // `null` = reachable; `{ message }` = show the red banner (message may be '').
+  const [connectionError, setConnectionError] = useState(null);
 
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -43,16 +59,6 @@ export default function ChatRoom() {
         // Prevent multiple registrations
         if (imageHandlersRegistered.current) return;
         imageHandlersRegistered.current = true;
-
-        const handleReceiveImage = (data) => {
-          setMessages((prev) => {
-            const exists = prev.some(
-              (msg) => msg.image === data.image && msg.sender === data.sender
-            );
-            if (exists) return prev;
-            return [...prev, { id: crypto.randomUUID(), ...data }];
-          });
-        };
 
         const handleReceiveEncryptedImage = async ({ encrypted, nonce, name, type }) => {
           if (!hasSharedKeyRef.current || !sharedKeyRef.current || !cryptoWorkerRef.current) return;
@@ -117,12 +123,18 @@ export default function ChatRoom() {
           }
         };
 
-        socket.on('receive-image', handleReceiveImage);
         socket.on('receive-encrypted-image', handleReceiveEncryptedImage);
 
+        const handleImageError = (message) => {
+          setIsUploadingImage(false);
+          alert(`❌ ${message || tRef.current('chat.alertImageSendFailed')}`);
+        };
+
+        socket.on('image-error', handleImageError);
+
         return () => {
-          socket.off('receive-image', handleReceiveImage);
           socket.off('receive-encrypted-image', handleReceiveEncryptedImage);
+          socket.off('image-error', handleImageError);
           imageHandlersRegistered.current = false;
         };
       }, []);
@@ -134,31 +146,25 @@ export default function ChatRoom() {
 
     // Check if encryption is ready
     if (!hasSharedKeyRef.current || !cryptoWorkerRef.current) {
-      alert('Please wait for encryption to be established before sending images.');
+      alert(t('chat.alertWaitEncryption'));
       return;
     }
 
     // Check if socket is connected
     if (!socket.connected) {
-      alert('Connection lost. Please refresh the page.');
+      alert(t('chat.alertConnectionLost'));
       return;
     }
 
     // Check if already uploading
     if (isUploadingImage) {
-      alert('Please wait for the current upload to complete.');
+      alert(t('chat.alertUploadInProgress'));
       return;
     }
 
     const validTypes = ['image/jpeg', 'image/png', 'image/gif'];
-    if (!validTypes.includes(file.type) || file.size > 6 * 1024 * 1024) {
-      alert('Only JPG/PNG/GIF under 6MB allowed');
-      return;
-    }
-
-    // More aggressive size limit for stability
-    if (file.size > 3 * 1024 * 1024) { // 3MB limit for stability
-      alert('Image too large. Please use images under 3MB for better stability.');
+    if (!validTypes.includes(file.type) || file.size > MAX_IMAGE_FILE_BYTES) {
+      alert(t('chat.alertOnlyTypes'));
       return;
     }
 
@@ -186,9 +192,9 @@ export default function ChatRoom() {
           console.log('Image bytes length for encryption:', imageBytes.length);
         }
 
-        // More conservative limit for encrypted data
-        if (imageBytes.length > 2 * 1024 * 1024) { // 2MB limit for encrypted data
-          alert('Image too large after compression. Please use a smaller image.');
+        // Limit the encrypted payload to what the relay will accept.
+        if (imageBytes.length > MAX_ENCRYPTED_IMAGE_BYTES) {
+          alert(t('chat.alertImageTooLarge'));
           setIsUploadingImage(false);
           return;
         }
@@ -209,17 +215,14 @@ export default function ChatRoom() {
           console.log('Encrypted data length:', ciphertext.length);
         }
 
-        // Send encrypted image
+        // Send encrypted image as binary frames (no Array.from JSON inflation).
         socket.emit('send-encrypted-image', {
           roomId,
-          encrypted: Array.from(ciphertext),
-          nonce: Array.from(nonce),
+          encrypted: ciphertext,
+          nonce,
           name: file.name,
           type: file.type,
         });
-
-        // Add a longer delay to prevent overwhelming the socket
-        await new Promise(resolve => setTimeout(resolve, 500));
 
         // Add to local messages
         setMessages((prev) => [
@@ -238,7 +241,7 @@ export default function ChatRoom() {
         ]);
       } catch (err) {
         console.error('Failed to encrypt image:', err);
-        alert('Failed to encrypt image. Please try again.');
+        alert(t('chat.alertEncryptFailed'));
       } finally {
         setIsUploadingImage(false);
       }
@@ -286,6 +289,21 @@ export default function ChatRoom() {
 
   useAutoScroll(messagesEndRef, messages);
 
+  // Surface an unreachable relay instead of sitting on "Establishing Encryption…".
+  useEffect(() => {
+    const handleConnectError = (err) => {
+      setConnectionError({ message: err?.message || '' });
+    };
+    const handleConnect = () => setConnectionError(null);
+
+    socket.on('connect_error', handleConnectError);
+    socket.on('connect', handleConnect);
+    return () => {
+      socket.off('connect_error', handleConnectError);
+      socket.off('connect', handleConnect);
+    };
+  }, []);
+
   useEffect(() => {
     cryptoWorkerRef.current = new CryptoWorker();
     initSodium().then(async () => {
@@ -315,7 +333,6 @@ export default function ChatRoom() {
           roomId,
           publicKey: Array.from(myPublicKey),
         });
-        myPublicKeySent.current = true;
       }
 
       setTimeout(() => {
@@ -386,10 +403,11 @@ export default function ChatRoom() {
       new TextEncoder().encode(input),
       sharedKeyRef.current
     );
+    // Binary frames, matching the image path (B6) — no number-array inflation.
     socket.emit("send-message", {
       roomId,
-      encrypted: Array.from(ciphertext),
-      nonce: Array.from(nonce)
+      encrypted: ciphertext,
+      nonce
     });
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     setMessages(prev => [...prev, { id: crypto.randomUUID(), text: input, sender: socket.id, timestamp: time }]);
@@ -413,45 +431,10 @@ export default function ChatRoom() {
     if (!roomId || joinedRef.current) return;
     joinedRef.current = true;
 
-    const IDLE_AFTER = 15 * 1000;
-    const INACTIVITY_LIMIT = 10 * 60 * 1000;
-
-    let idle = false;
-    let idleTimer;
-    let countdownInterval;
-
-    const handleActivity = () => {
-      clearTimeout(idleTimer);
-      if (idle) {
-        idle = false;
-        socket.emit("cancelInactivityCountdown");
-      }
-
-      idleTimer = setTimeout(() => {
-        idle = true;
-        socket.emit("startInactivityCountdown");
-      }, IDLE_AFTER);
-    };
-
-    ["mousemove", "keydown", "click", "touchstart"].forEach(event =>
-      window.addEventListener(event, handleActivity)
-    );
-    handleActivity();
-
     const setup = async () => {
       if (!socket.connected) socket.connect();
 
-      socket.on("roomDestructed", (msg) => {
-        clearInterval(countdownInterval);
-        setTimeLeft(0);
-        alert(msg);
-        socket.disconnect();
-        navigate("/");
-      });
-
-      socket.on("room-destroyed", ({ message, leftUserId }) => {
-        clearInterval(countdownInterval);
-        setTimeLeft(0);
+      socket.on("room-destroyed", ({ message }) => {
         setMessages(prev => [
           ...prev,
           {
@@ -473,22 +456,6 @@ export default function ChatRoom() {
         }, 1000);
       });
 
-      socket.on("start-inactivity-countdown", ({ startTime }) => {
-        clearInterval(countdownInterval);
-        timerStartRef.current = startTime;
-
-        countdownInterval = setInterval(() => {
-          const elapsed = Date.now() - timerStartRef.current;
-          const remaining = Math.max(0, INACTIVITY_LIMIT - elapsed);
-          setTimeLeft(Math.ceil(remaining / 1000));
-        }, 1000);
-      });
-
-      socket.on("cancel-inactivity-countdown", () => {
-        clearInterval(countdownInterval);
-        setTimeLeft(null);
-      });
-
       socket.on("receive-public-key", async ({ publicKey, theirSocketId }) => {
         if (receivedKey.current === theirSocketId) return;
         receivedKey.current = theirSocketId;
@@ -503,7 +470,7 @@ export default function ChatRoom() {
             ...prev,
             {
               id: crypto.randomUUID(),
-              text: "🔒 End-to-end encryption is now active",
+              text: tRef.current('chat.encryptionNowActive'),
               sender: "system",
               timestamp: new Date().toLocaleTimeString([], {
                   hour: '2-digit',
@@ -571,32 +538,16 @@ export default function ChatRoom() {
         alert(`❌ ${msg}`);
         navigate("/");
       });
-
-      socket.on("user-left", () => {
-        setMessages([]);
-        alert("👋 The other user has left the room.");
-        navigate("/");
-      });
     };
 
     setup();
 
     return () => {
-      clearTimeout(idleTimer);
-      clearInterval(countdownInterval);
-      ["mousemove", "keydown", "click", "touchstart"].forEach((event) =>
-        window.removeEventListener(event, handleActivity)
-      );
-
       socket.off("receive-message");
       socket.off("receive-public-key");
       socket.off("system-message");
       socket.off("join-error");
-      socket.off("user-left");
-      socket.off("roomDestructed");
       socket.off("room-destroyed");
-      socket.off("start-inactivity-countdown");
-      socket.off("cancel-inactivity-countdown");
 
       if (socket.connected) socket.disconnect();
       joinedRef.current = false;
@@ -611,28 +562,63 @@ export default function ChatRoom() {
     navigate('/');
   };
 
+  // On native, window.location.origin is the WebView's `https://localhost`, so
+  // invite links must use the configured relay origin instead.
+  const shareUrl = `${getShareOrigin()}/chat?room=${roomId}`;
+
+  const handleCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setConnectionError(null);
+    } catch {
+      // Clipboard API can be unavailable in a WebView without focus/permission.
+      window.prompt(t('chat.copyInvitePrompt'), shareUrl);
+    }
+  };
+
   return (
     <div className="chat-outer">
       <div className="chat-container">
         <div className="chat-header">
-          <h1 style={{ fontFamily: "'Orbitron' " }}>🔐 Silencium</h1>
-          <button onClick={handleLeaveRoom} style={{ fontFamily: "'Orbitron' " }}>Leave Chat</button>
+          <h1>{t('chat.title')}</h1>
+          <div className="chat-header-actions">
+            <button
+              type="button"
+              className="chat-gear"
+              title={t('chat.serverSettings')}
+              aria-label={t('chat.serverSettings')}
+              onClick={() => navigate('/settings')}
+            >
+              ⚙️
+            </button>
+            <button onClick={handleLeaveRoom}>{t('chat.leave')}</button>
+          </div>
         </div>
 
         <div className="chat-link">
-          <span style={{ fontFamily: "'Orbitron'" }}>Share Link For Invitation:</span> &nbsp;
-          <button
-            style={{ fontFamily: "'Orbitron' " }}
-            onClick={() =>
-              navigator.clipboard.writeText(`${window.location.origin}/chat?room=${roomId}`)
-            }
-          >
-            Copy Link
-          </button>
+          <span>{t('chat.shareLabel')}</span> &nbsp;
+          <button onClick={handleCopyLink}>{t('chat.copyLink')}</button>
+          <div className="chat-link-value" title={shareUrl}>
+            {shareUrl}
+          </div>
         </div>
 
+        {connectionError && (
+          <div className="conn-error" role="alert">
+            ⚠{' '}
+            {renderWithCode(
+              t('chat.connectionError', {
+                url: getSocketUrl(),
+                message: connectionError.message || t('chat.relayUnreachable'),
+              })
+            )}
+            <button type="button" onClick={() => navigate('/settings')}>
+              {t('chat.serverSettings')}
+            </button>
+          </div>
+        )}
+
         <div className="encryption-status" style={{ 
-          fontFamily: "'Orbitron'", 
           textAlign: 'center', 
           padding: '8px',
           margin: '8px 0',
@@ -641,7 +627,7 @@ export default function ChatRoom() {
           color: '#00ff00',
           fontSize: '12px'
         }}>
-          {hasSharedKey ? '🔒 Encryption Active' : '⏳ Establishing Encryption...'}
+          {hasSharedKey ? t('chat.encryptionActive') : t('chat.encryptionEstablishing')}
         </div>
 
         <div className="chat-messages">
@@ -660,7 +646,7 @@ export default function ChatRoom() {
                 {msg.type?.startsWith('image') ? (
                         <CanvasImageRenderer imageData={msg.image} imageName={msg.name} />
                       ) : (
-                        <div>{msg.text ?? '[no text]'}</div>
+                        <div>{msg.text ?? t('chat.noText')}</div>
                       )}
 
                       {msg.timestamp && (msg.text || msg.image) && (
@@ -671,18 +657,6 @@ export default function ChatRoom() {
           ))}
           <div ref={messagesEndRef} />
         </div>
-
-        {timeLeft !== null && timeLeft > 0 && (
-          <div className="inactivity-warning" style={{ fontFamily: "'Orbitron' " }}>
-            ⚠️ Session expires in {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, '0')} due to inactivity
-          </div>
-        )}
-
-        {timeLeft === 0 && (
-          <div className="expired-warning">
-            🔒 Session expired due to inactivity
-          </div>
-        )}
 
         <div className="chat-input">
           <input
@@ -698,18 +672,18 @@ export default function ChatRoom() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-            placeholder="> Type a message..."
+            placeholder={t('chat.typeMessage')}
             disabled={!hasSharedKey}
           />
           <button 
             onClick={() => fileInputRef.current.click()} 
             disabled={!hasSharedKey || isUploadingImage}
-            title={!hasSharedKey ? "Wait for encryption to be established" : isUploadingImage ? "Uploading image..." : "Attach image"}
+            title={!hasSharedKey ? t('chat.waitForEncryption') : isUploadingImage ? t('chat.uploadingImage') : t('chat.attachImage')}
           >
             {isUploadingImage ? '⏳' : '📎'}
           </button>
           <button onClick={sendMessage} disabled={!hasSharedKey}>
-            Send
+            {t('chat.send')}
           </button>
         </div>
       </div>

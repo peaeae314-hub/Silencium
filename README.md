@@ -1,319 +1,397 @@
-# 🔒 Silencium - Secure Private Chat
+# 🔒 Silencium — Secure Private Chat
 
-A real-time, end-to-end encrypted chat application with self-destructing rooms and secure image sharing. Built with privacy and security as the top priority.
+A real-time, end-to-end encrypted chat app for two people. Rooms are created by
+link, live in memory only, and are destroyed when a participant leaves. Messages
+and images are encrypted in the browser with Libsodium and relayed as ciphertext.
+
+This is a small MVP, not a hardened product. The [security model](#-security-model)
+below says exactly what it does and does not protect against — please read it
+before trusting it with anything sensitive.
 
 ## ✨ Features
 
-- **🔐 End-to-End Encryption** - All messages and images are encrypted using Libsodium
-- **🚪 Self-Destructing Rooms** - Rooms are automatically destroyed when any user leaves
-- **📸 Secure Image Sharing** - Encrypted image transmission with compression
-- **👥 No Accounts Required** - Anonymous chat without registration
-- **🗑️ No Data Storage** - Messages are never stored on the server
-- **🔍 Screenshot Detection** - Built-in screenshot detection capabilities
-- **⚡ Real-time Communication** - Instant message delivery via WebSocket
-- **🎨 Modern UI** - Clean, terminal-inspired interface
+- **🔐 End-to-end encryption** — messages and images are encrypted in the browser
+  (Libsodium, X25519 key exchange + ChaCha20-Poly1305) and only decrypted on the
+  receiving device.
+- **🚪 Ephemeral rooms** — a room exists in server memory only, holds at most two
+  participants, and is destroyed when someone leaves or disconnects.
+- **📎 Encrypted image sharing** — images are compressed, encrypted, and sent as
+  binary ciphertext, then rendered inline.
+- **👥 No accounts** — anonymous, no registration, no login.
+- **🗑️ No database** — the relay keeps room membership in memory and stores
+  nothing; there is no message or image history.
+- **⚡ Real-time** — Socket.IO over WebSocket, with a same-process production
+  server that also serves the built UI.
+- **🎨 Terminal-inspired UI** — responsive layout for desktop and mobile.
+
+## 🚫 Not included (and not claimed)
+
+Silencium deliberately does **not** have, and does not pretend to have:
+
+- Screenshot detection or screenshot prevention.
+- One-view / self-destructing images, or download blocking. A recipient can
+  always save or screenshot an image they can see.
+- Accounts, groups, admin roles, voice/video calls, read receipts, cloud
+  history, or multi-device sync.
+- Verified identities. There is no fingerprint or TOFU check, so a malicious
+  relay could mount a man-in-the-middle attack — see
+  [unauthenticated key exchange](#known-limitation-unauthenticated-key-exchange).
+- TLS. The server speaks plain HTTP; put it behind a TLS reverse proxy for any
+  real deployment.
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js (v16 or higher)
-- npm or yarn
 
-### Installation
+- Node.js v16 or newer (developed and tested on Node v22)
+- npm (no pnpm/yarn required)
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/ubiiii/Silencium.git
-   cd Silencium
-   ```
+### 1. Install dependencies
 
-2. **Install dependencies**
-   ```bash
-   # Install client dependencies
-   cd client
-   npm install
+```bash
+# From the repository root
+cd client && npm install
+cd ../server && npm install
+```
 
-   # Install server dependencies
-   cd ../server
-   npm install
-   ```
+### 2. Run in development (two processes)
 
-3. **Start the development servers**
-   ```bash
-   # Start the server (from server directory)
-   cd server
-   node app.js
-   
-   # Terminal 2: Start the frontend development server
-   cd client
-   npm run dev
-   ```
+Terminal 1 — ciphertext relay (`http://localhost:3001`):
 
-4. **Open your browser**
-   - Navigate to `http://localhost:5173`
-   - Create a new chat room or join an existing one
+```bash
+cd server
+node app.js
+```
+
+Terminal 2 — Vite dev server with hot reload:
+
+```bash
+cd client
+npm run dev -- --host 127.0.0.1
+```
+
+> **Use `--host 127.0.0.1`.** Plain `npm run dev` binds IPv6 loopback only
+> (`[::1]`), so `http://127.0.0.1:5173` returns nothing. The flag makes the dev
+> server reachable over IPv4.
+
+### 3. Open the app
+
+Open **http://127.0.0.1:5173**, click **Create Chat Room**, and share the link
+with the other participant (it looks like `/chat?room=<id>`).
+
+In development the browser connects to the relay at `http://localhost:3001`
+by default. The effective URL is resolved as: a URL saved in **Settings** (the
+⚙ button on the home screen) → `VITE_SERVER_URL` → browser default
+(`window.location.origin` in a production build, `http://localhost:3001` in
+dev). To point the app somewhere else, open the gear and save it — no rebuild
+needed.
+
+## 📦 Production (single process)
+
+Build the client once, then run the relay in production mode. It serves the built
+SPA from `client/dist` **and** hosts Socket.IO on the same origin, so no second
+process is needed.
+
+```bash
+# 1. Build the client
+cd client
+npm run build
+
+# 2. Start the production server (from server/)
+cd ../server
+NODE_ENV=production node app.js
+```
+
+Then open **http://localhost:3001** — the SPA, its assets, and the WebSocket all
+come from that one process. Hard refreshes on routes such as
+`/chat?room=<id>` fall back to `index.html`.
+
+- `PORT=8080 NODE_ENV=production node app.js` changes the port.
+- `GET /health` returns `{"status":"ok","mode":"production"}`.
+- With no saved override, the client's production socket URL is
+  `window.location.origin`, so open the server URL itself (not a separate dev
+  server).
+- If `client/dist` is missing, the server logs a warning and returns HTTP 503 on
+  `/` instead of crashing.
+
+## 📱 Android APK
+
+The same web client also ships as a sideloadable Android app via Capacitor:
+`dist-mobile/Silencium-debug.apk` (app id `app.silencium.chat`, name
+**Silencium**, ≈4.6 MB, debug-signed). Because a Capacitor WebView serves the
+app from `https://localhost`, the relay URL is **runtime configuration** entered
+on first launch (or later via the ⚙ button) and persisted with Capacitor
+Preferences; invite links are built from that configured relay origin. A build
+is not Play-Store signed, image sharing rides the WebView file chooser, and
+rooms stay two-person. See [`MOBILE-ANDROID.md`](./MOBILE-ANDROID.md) for
+install steps, the tunnel (`开隧道`) workflow, LAN/cleartext notes, rebuild
+commands, and a manual check list.
 
 ## 🏗️ Project Structure
 
 ```
 Silencium/
-├── client/                 # React frontend
+├── client/                      # React + Vite frontend (also the Capacitor app)
 │   ├── src/
-│   │   ├── components/     # React components
-│   │   ├── pages/         # Page components
-│   │   ├── crypto/        # Encryption utilities
-│   │   └── utils/         # Utility functions
-├── server/                 # Node.js backend
-│   ├── app.js            # Main server file
-│   └── rooms/            # Room management
-└── README.md
+│   │   ├── components/          # CanvasImageRenderer, ServerUrlForm
+│   │   ├── crypto/              # libsodium wrapper, crypto worker
+│   │   ├── pages/               # CreateRoom, ChatRoom, Settings
+│   │   ├── src/hooks/           # useAutoScroll
+│   │   ├── src/styles/          # hacker-theme.css
+│   │   └── utils/               # socket.js, serverUrl.js (runtime relay URL)
+│   ├── capacitor.config.json    # appId app.silencium.chat, webDir dist
+│   ├── android/                 # generated Gradle project (assembleDebug)
+│   └── dist/                    # built SPA (generated by `npm run build`)
+├── dist-mobile/                 # Silencium-debug.apk (generated, sideload)
+├── MOBILE-ANDROID.md            # APK install + relay-URL + rebuild guide
+├── server/
+│   ├── app.js                   # Express + Socket.IO relay, static serving
+│   └── rooms/roomManager.js     # in-memory 2-person rooms
+└── tools/smoke-test.cjs         # end-to-end socket + HTTP smoke test
 ```
 
 ## 🔧 Technology Stack
 
-### Frontend
-- **React** - UI framework
-- **Socket.io Client** - Real-time communication
-- **Libsodium** - End-to-end encryption
-- **Tailwind CSS** - Styling
-- **Vite** - Build tool
+**Frontend:** React 19, React Router, Socket.IO client, `libsodium-wrappers`
+(in a Web Worker), Vite, Tailwind CSS (minimal).
 
-### Backend
-- **Node.js** - Runtime environment
-- **Express** - Web framework
-- **Socket.io** - Real-time communication
-- **CORS** - Cross-origin resource sharing
+**Backend:** Node.js, Express 5, Socket.IO, CORS. In-memory only — no database.
 
-## 🔐 Security Features
+## 🔐 Security Model
 
 ### Encryption
-- **Libsodium** for cryptographic operations
-- **X25519** key exchange
-- **ChaCha20-Poly1305** for authenticated encryption
-- **Secure random number generation**
 
-### Privacy
-- **No user accounts** - Completely anonymous
-- **No message storage** - Messages are never saved
-- **Self-destructing rooms** - Automatic cleanup
-- **End-to-end encryption** - Only participants can read messages
+- **X25519** key agreement (`crypto_kx_keypair`,
+  `crypto_kx_client_session_keys` / `crypto_kx_server_session_keys`).
+- **ChaCha20-Poly1305** authenticated encryption (`crypto_secretbox_easy` /
+  `crypto_secretbox_open_easy`).
+- Keys are generated per browser session, held in memory, and never sent
+  anywhere. Only public keys are exchanged.
+- Message and image payloads are encrypted before they leave the device. The
+  relay receives `{ ciphertext, nonce }` and forwards it unchanged.
 
-### Image Security
-- **Encrypted image transmission**
-- **Automatic compression** for better performance
-- **Secure file handling**
+### What the server can and cannot see
 
-## 📸 Screenshots
+The relay **cannot read or decrypt** message/image content: it has no private
+keys and no database, and it forwards ciphertext only. It does, however, see
+**metadata**: socket ids, room ids, which sockets are in a room, connection and
+disconnection timing, message sizes, and (because key exchange is relayed) the
+public keys.
 
-### Home Page
-![Home Page](screenshots/home-page.png)
-*Landing page with security features and create room button*
+It is therefore accurate to say the server relays ciphertext it cannot decrypt —
+not that it is "completely blind". A compromised or malicious relay can also
+interfere with key exchange, as noted next.
 
-### Chat Room
-![Chat Room](screenshots/chat-room.png)
-*Active chat room with encrypted messaging*
+### Known limitation: unauthenticated key exchange
 
-### Image Sharing
-![Image Sharing](screenshots/image-sharing.png)
-*Secure image sharing with encryption*
+Public keys are relayed through the server with **no fingerprint comparison and
+no TOFU pinning**. A malicious or compromised relay could substitute its own
+public key, complete a separate key exchange with each participant, and read or
+alter messages. This is inherent to an unauthenticated `crypto_kx` handshake.
 
-### Full Screen Image Viewer
-![Image Viewer](screenshots/image-viewer.png)
-*Full screen image viewer with zoom and pan*
+Fixing it requires an out-of-band fingerprint/verification step, which is **not
+part of this MVP**. Until then, treat the relay as trusted infrastructure.
+
+### Room ids
+
+Room ids are 128 bits from the browser CSPRNG (`crypto.getRandomValues`),
+base64url-encoded (22 URL-safe characters). A room id is a join capability, not
+an encryption key: anyone who has the link can occupy the second (and last) seat
+while the room is open. There is no room password.
+
+### Images
+
+- Accepted uploads: JPG, PNG, GIF up to **6 MB**.
+- The client always re-encodes images to at most **1280×720** (JPEG quality 0.6,
+  other types 0.7) before encryption.
+- If the compressed image is still larger than **3 MB** after encryption, the
+  client refuses to send and tells you.
+- The relay rejects encrypted images over **4 MB** and the socket frame limit is
+  **5 MB**.
+- Images render inline in the chat. There is no fullscreen/zoom viewer, no
+  download button, and no screenshot detection — a recipient can save what they
+  can see.
 
 ## 🚪 Room Management
 
-### Creating a Room
-1. Click "Create Chat Room" on the home page
-2. Share the generated room link with your contact
-3. Start chatting securely
+### Creating a room
 
-### Joining a Room
-1. Use the shared room link
-2. Or manually enter the room ID
-3. Connect instantly with end-to-end encryption
+1. Click **Create Chat Room** on the home page.
+2. A 128-bit random room id is generated and put in the URL.
+3. Share the link with your contact.
 
-### Room Destruction
-- Rooms are automatically destroyed when any user leaves
-- All participants are notified and redirected to home
-- No orphaned rooms or stuck users
+### Joining a room
 
-## 🔧 Development
+Open the shared link (`/chat?room=<id>`). The first two sockets in a room are
+accepted; a third connection is rejected with **Room is full**.
 
-### Running in Development Mode
-```bash
-# Client (with hot reload)
-cd client
-npm run dev
+### Room destruction
 
-# Server
-cd server
-node app.js
-```
-
-### Building for Production
-```bash
-# Build client
-cd client
-npm run build
-
-# Start production server
-cd server
-NODE_ENV=production node app.js
-```
+- Rooms are destroyed when a participant leaves or disconnects (a disconnect
+  gets a 5-second grace period for reconnection).
+- All remaining participants are notified and redirected to the home page.
+- No orphaned rooms: membership lives only in server memory.
+- There is no inactivity timer — a room stays open while its participants are
+  connected.
 
 ## 🐛 Troubleshooting
 
-### Common Issues
+**Connection failed / stuck on "Establishing Encryption…"**
 
-**Connection Failed**
-- Ensure the server is running on port 3001
-- Check firewall settings
-- Verify network connectivity
+- Make sure the relay is running on port 3001 (`node app.js`) and that
+  `curl http://localhost:3001/health` answers.
+- In development the client connects to `http://localhost:3001`; if you changed
+  the relay port, open the ⚙ **Settings** screen and save the new URL, or set
+  `VITE_SERVER_URL` at build time.
+- On the Android app the URL is not hardcoded at all — set it on first launch
+  (see [`MOBILE-ANDROID.md`](./MOBILE-ANDROID.md)). The chat screen shows a red
+  "Cannot reach the relay" banner when the URL is wrong.
+- If the room was destroyed (someone left), everyone is sent back to the home
+  page and must create a new room.
 
-**Encryption Issues**
-- Clear browser cache and reload
-- Check browser console for errors
-- Ensure WebSocket connections are allowed
+**`http://127.0.0.1:5173` does not respond in development**
 
-**Image Upload Problems**
-- Check file size (max 3MB)
-- Ensure image format is supported
-- Clear browser cache if needed
+- Start Vite with `npm run dev -- --host 127.0.0.1`. Plain `npm run dev` binds
+  IPv6 loopback only; use `http://localhost:5173` in that case.
+
+**Production URL shows the SPA but sockets fail**
+
+- Open the server origin itself (`http://localhost:3001`), not the Vite dev
+  server. With no saved override, the production client uses
+  `window.location.origin` for Socket.IO.
+- Rebuild after client changes: `cd client && npm run build`, then restart the
+  server.
+
+**`Client build missing` / HTTP 503 in production**
+
+- You ran `NODE_ENV=production node app.js` before building. Run
+  `cd client && npm run build` and restart the server.
+
+**Image upload rejected or never arrives**
+
+- Allowed: JPG/PNG/GIF up to 6 MB. Everything is re-compressed to at most
+  1280×720; if the encrypted result still exceeds 3 MB the client refuses it
+  (the relay would reject anything over 4 MB anyway).
+- Wait for **🔒 Encryption Active** before attaching — the attach button is
+  disabled until key exchange finishes.
+
+**Encryption issues / decryption errors after a reconnect**
+
+- Hard-refresh both tabs so both sides redo the key exchange in the same room.
+- A room that lost a participant is destroyed; create a new room instead of
+  reusing the old tab.
 
 ## 🤝 Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+1. Fork the repository.
+2. Create a feature branch (`git checkout -b feature/amazing-feature`).
+3. Commit your changes.
+4. Push the branch and open a Pull Request.
 
 ## 📝 License
 
-This project is licensed under the ISC License.
+ISC.
 
 ## ⚠️ Disclaimer
 
-- Screenshot prevention is limited on web platforms
-- No images are stored - every asset is ephemeral and encrypted
-- This is a demonstration project for secure messaging concepts
-- Use at your own risk for sensitive communications
+- This is a demonstration project for end-to-end encrypted messaging concepts,
+  not an audited secure messenger.
+- The relay cannot decrypt content, but it can see metadata and — because key
+  exchange is unauthenticated — could in principle man-in-the-middle a session.
+- There is no screenshot or download protection: anything displayed can be
+  captured.
+- There is no TLS in this repo. Terminate TLS in front of the relay before
+  exposing it to a network.
 
-## 🐛 Troubleshooting
+## ❓ FAQ
 
-### Common Issues
+### Security & privacy
 
-**Connection Errors**
-- Ensure the server is running on port 3001
-- Check that the client is connecting to the correct server URL
+**Q: Is my data saved during transfer?**
+A: The relay has no database and does not persist message content. It keeps room
+membership in memory and forwards ciphertext to the other participant. The app
+itself stores no history; refreshing the page clears the conversation.
 
-**Encryption Issues**
-- Clear browser cache and reload
-- Ensure both users are in the same room
-- Check browser console for error messages
+**Q: What encryption is used?**
+A: Libsodium's X25519 key agreement plus ChaCha20-Poly1305 authenticated
+encryption, running in a Web Worker in the browser. These are the same
+well-reviewed primitives used by many messengers; that does not by itself make
+Silencium's protocol equivalent to Signal's.
 
-**Image Upload Issues**
-- Ensure image is under 5MB
-- Check that image format is JPG, PNG, or GIF
-- Try refreshing the page
-
-### ScreenShots
-<img width="399" height="870" alt="Screenshot 2025-08-02 153814" src="https://github.com/user-attachments/assets/a658606a-c31a-4af4-b4c3-ab31f0635882" />
-<img width="401" height="868" alt="Screenshot 2025-08-02 153836" src="https://github.com/user-attachments/assets/915d1360-d188-4f90-97b4-c99dc7bdbbe7" />
-<img width="1919" height="962" alt="Screenshot 2025-08-02 153850" src="https://github.com/user-attachments/assets/02418d03-e680-42d8-ace5-2add3533f5f0" />
-<img width="1919" height="962" alt="Screenshot 2025-08-02 153850" src="https://github.com/user-attachments/assets/02418d03-e680-42d8-ace5-2add3533f5f0" />
-
-<img width="946" height="950" alt="Screenshot 2025-08-02 154039" src="https://github.com/user-attachments/assets/7d0a9fb6-a712-4421-9625-da7687a3a808" />
-<img width="952" height="940" alt="Screenshot 2025-08-02 154046" src="https://github.com/user-attachments/assets/f084c3aa-01d4-44ac-a514-1cadb28c6f8b" />
-<img width="398" height="854" alt="Screenshot 2025-08-02 154150" src="https://github.com/user-attachments/assets/1064f23a-b6a6-455f-af3f-1714a0aec381" />
-
-
-
-## 📞 Support
-
-If you encounter any issues or have questions:
-- Open an issue on GitHub
-- Check the troubleshooting section
-- Review the console logs for error messages
-
-## ❓ Frequently Asked Questions (FAQ)
-
-### **🔒 Security & Privacy**
-
-**Q: Is my data saved somewhere during transfer?**
-A: **No, data is NOT saved anywhere during transfer.** Messages are encrypted on your device, sent through the server (which acts like a "mailman"), and immediately deleted after delivery. The server cannot read the encrypted messages and has no database to store them.
-
-**Q: What encryption is used for messages and images?**
-A: **Libsodium with ChaCha20-Poly1305 encryption and X25519 key exchange.** This is the same military-grade encryption used by WhatsApp, Signal, and Google Chrome. Messages are encrypted on your device before sending and only decrypted on the receiver's device.
-
-**Q: How do you prevent middleman attacks?**
-A: **End-to-end encryption with direct key exchange.** Users exchange public keys directly (peer-to-peer), generate a shared secret, and encrypt all messages with that secret. The server is "blind" - it can only pass encrypted data but cannot read, modify, or access the actual message content.
+**Q: How do you prevent man-in-the-middle attacks?**
+A: **Currently, you don't get a guarantee.** The relay passes public keys
+between peers but there is no fingerprint comparison or TOFU pinning, so a
+malicious relay could substitute keys and MITM the session. This is a known,
+documented MVP limitation — see
+[unauthenticated key exchange](#known-limitation-unauthenticated-key-exchange).
 
 **Q: Can the server read my messages?**
-A: **No, absolutely not.** The server only sees encrypted gibberish. It acts like a mailman passing locked boxes - it can deliver them but cannot open them. Only you and the other person have the keys to decrypt the messages.
+A: It receives only ciphertext and nonces and holds no private keys, so it
+cannot decrypt normal traffic. It is not "completely blind" though: it sees
+metadata such as room ids, connection timing, and message sizes, and its key
+relay is unauthenticated.
 
-**Q: What happens if someone intercepts the connection?**
-A: **They would only see encrypted data.** Even if someone intercepts the network traffic, they would only see encrypted gibberish. Without the private keys (which are never sent over the network), the encrypted data is mathematically impossible to decrypt.
+**Q: What if someone intercepts the connection?**
+A: Message and image payloads appear as ciphertext. Because the relay speaks
+plain HTTP in this repo, metadata, room ids, and traffic timing are visible to
+anyone on the network path — deploy behind HTTPS. An active attacker who
+controls the relay could also attempt the MITM described above.
 
-### **🚪 Room Management**
+### Rooms
 
 **Q: How do rooms work?**
-A: **Self-destructing rooms with maximum 2 users.** When you create a room, you get a unique link to share. When any user leaves, the room is automatically destroyed and all remaining users are redirected to the home page.
+A: Up to two participants per room, joined by link. When either participant
+leaves or disconnects (after a 5-second grace), the room is destroyed and any
+remaining participant is returned to the home page.
 
 **Q: How long do rooms last?**
-A: **Until someone leaves or 10 minutes of inactivity.** Rooms are ephemeral - they exist only while users are active and are automatically cleaned up when users leave or become inactive.
+A: As long as both participants stay connected. There is no inactivity timer;
+leaving or disconnecting ends the room.
 
-**Q: Can I join a room with more than 2 people?**
-A: **No, maximum 2 users per room.** This is by design for security and privacy. Each room supports exactly 2 users for end-to-end encrypted communication.
-
-### **📸 Image Sharing**
-
-**Q: Are images stored on the server?**
-A: **No, images are never stored.** Images are encrypted, compressed, and transmitted directly between users. They are never saved to any server storage or database.
-
-**Q: How secure is image sharing?**
-A: **Fully encrypted with compression.** Images are encrypted using the same ChaCha20-Poly1305 encryption as messages, automatically compressed for better performance, and transmitted securely between users.
-
-**Q: What image formats are supported?**
-A: **JPG, PNG, GIF with maximum 3MB size.** Images are automatically compressed if they're too large and encrypted before transmission.
-
-### **🔧 Technical**
-
-**Q: What happens if I lose connection?**
-A: **Automatic reconnection with 5-second grace period.** The app will attempt to reconnect automatically. If reconnection fails, you'll be notified and can refresh the page.
-
-**Q: Can I use this on mobile?**
-A: **Yes, fully responsive design.** The app works on all devices - desktop, tablet, and mobile with a responsive interface.
-
-**Q: What browsers are supported?**
-A: **Modern browsers with WebSocket support.** Chrome, Firefox, Safari, Edge, and other modern browsers that support WebSocket connections and the required cryptographic APIs.
-
-**Q: Is this open source?**
-A: **Yes, fully open source.** All code is available on GitHub for review, audit, and contribution. The encryption libraries used are also open source and peer-reviewed.
-
-### **🛡️ Privacy**
-
-**Q: Do you collect any user data?**
-A: **No, zero data collection.** No accounts, no logs, no analytics, no tracking. The app is completely anonymous and doesn't collect any user information.
-
-**Q: Can you see my messages?**
-A: **No, we cannot see any messages.** The developers have no access to message content, user data, or any communication. Everything is encrypted end-to-end.
-
-**Q: What about metadata?**
-A: **Minimal metadata only.** The server only knows when users connect/disconnect and which room they're in. No message content, user identities, or communication patterns are logged.
-
-### **🚀 Usage**
-
-**Q: How do I start a secure chat?**
-A: **Click "Create Chat Room" and share the link.** The app generates a unique room link that you can share with your contact. Both users join the same room to start encrypted communication.
+**Q: Can more than two people join?**
+A: No. The third connection is rejected with "Room is full".
 
 **Q: What if someone gets my room link?**
-A: **Only works if both users are online.** Room links only work when both users are actively in the room. If someone gets your link but you're not online, they cannot access the room.
+A: The room id is only a join capability and there is no password, so anyone
+with the link can take the open second seat while the room exists. Share links
+only over channels you trust.
 
-**Q: Can I verify the other person is who I think they are?**
-A: **No built-in verification.** This is a limitation of anonymous chat. For sensitive communications, consider using additional verification methods outside the app.
+### Images
 
----
+**Q: Are images stored on the server?**
+A: No. Images are compressed, encrypted in the browser, relayed as ciphertext,
+and never written to disk or a database.
 
-**🔒 Built with privacy and security in mind. No data, no accounts, no logs.**
+**Q: What are the image limits?**
+A: JPG/PNG/GIF up to 6 MB on upload; re-encoded to at most 1280×720; max 3 MB
+encrypted from the client; 4 MB relay cap; 5 MB socket frame limit.
+
+**Q: Can I stop someone from screenshotting or saving an image?**
+A: No, and Silencium does not claim to. Anything rendered on screen can be
+captured or saved by the recipient.
+
+### Technical
+
+**Q: What happens if I lose connection?**
+A: The client attempts to reconnect. A disconnect gives the room a 5-second
+grace period; if reconnection does not happen in time, the room is destroyed for
+both participants.
+
+**Q: Does it work on mobile?**
+A: Yes, the layout is responsive. Mobile browsers still allow screenshots.
+
+**Q: Which browsers are supported?**
+A: Modern browsers with WebSocket and Web Crypto support (current Chrome,
+Firefox, Safari, Edge).
+
+**Q: Is it open source?**
+A: Yes, all code is in this repository.
+
+**Q: What metadata does the server know?**
+A: Socket ids, room ids, room membership, connect/disconnect timing, and message
+sizes. Message and image contents are ciphertext. There is no analytics or
+tracking in the app.
+
+**Q: Can I verify who the other person is?**
+A: Not in-app. There is no identity verification or key fingerprint comparison;
+confirm out-of-band if it matters.
