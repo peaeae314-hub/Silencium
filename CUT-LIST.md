@@ -106,7 +106,7 @@ Each step should leave `npm run dev` + `tools/smoke-test.cjs` green.
 8. **Fix `rooms` ReferenceError** (B9) or delete the broken previous-room block.
 9. **Production path** (B5): either add `express.static(client/dist)` + SPA fallback to `server/app.js`, or keep the documented two-process dev setup and drop the false production instructions.
 10. **Docs** (R20, R21) and **room-id hardening** (B12): generate room ids with `crypto.getRandomValues` (≥128 bits), not `Math.random().toString(36).slice(2,10)`.
-11. Deferred / optional: rate limiting, decrypt-error handling (B11), bundle splitting (B13), longer reconnect grace (B14).
+11. Deferred / optional: rate limiting, decrypt-error handling (B11), bundle splitting (B13). (B14 — longer reconnect grace — is done: 60 s, cancelled on re-join.)
 
 ## 4. Blockers, defects, and gotchas found while running
 
@@ -125,7 +125,7 @@ Each step should leave `npm run dev` + `tools/smoke-test.cjs` green.
 - **B11 — Robustness gaps.** No rate limiting or text-size cap on the relay; client `receive-message` has no `try/catch` around `crypto_secretbox_open_easy`, so a malformed/tampered frame throws unhandled (`ChatRoom.jsx:526–546`); `join-error` is only surfaced via `alert()`.
 - **B12 — Weak room ids.** `CreateRoom.jsx:8` uses `Math.random().toString(36).substring(2, 10)` (~41 bits, non-CSPRNG). Room id is a join capability, not the E2EE key, but it is guessable. Use `crypto.getRandomValues`.
 - **B13 — Bundle size.** Production build emits `index-*.js` 1.04 MB (338 KB gzip) + `crypto.worker-*.js` 750 KB. Acceptable for MVP; consider lazy-loading the crypto worker.
-- **B14 — Aggressive teardown may be wrong for mobile.** Any `disconnect` destroys the room after a 5 s grace (`server/app.js:222–257`), and any explicit leave destroys it immediately. On flaky mobile networks a brief drop ends the chat for everyone. Product decision: keep the “participants leave → destroy” rule (it matches the requirement) but consider a longer/reconnect-aware grace for the MVP.
+- **B14 — Aggressive teardown may be wrong for mobile.** Any `disconnect` destroys the room after a 5 s grace (`server/app.js:222–257`), and any explicit leave destroys it immediately. On flaky mobile networks a brief drop ends the chat for everyone. Product decision: keep the “participants leave → destroy” rule (it matches the requirement) but consider a longer/reconnect-aware grace for the MVP. — **DONE (B14 phase):** grace is now **60 s**, the held seat is reclaimed and the pending destroy **cancelled** when the same participant re-joins the same room, and manual leave still tears down immediately. See `CUT-PROGRESS.md §9`.
 - **B15 — Stale tooling warnings:** Browserslist/caniuse-lite data is ~15 months old (`npx update-browserslist-db@latest`); `tailwind.config.js` still uses the v3-style config with Tailwind v4. Both non-blocking.
 
 ### Structural notes (not cuts, just cleanup for the rewrite)

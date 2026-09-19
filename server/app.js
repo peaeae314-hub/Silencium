@@ -29,6 +29,106 @@ const io = new Server(server, {
   maxHttpBufferSize: MAX_SOCKET_FRAME_BYTES
 });
 
+// ── B14 — reconnect grace ─────────────────────────────────────────────────────
+// Android WebViews drop the Socket.IO transport when the app is backgrounded
+// (e.g. the user switches apps to paste an invite link). The participant is
+// still logically in the room, so a `disconnect` must NOT tear the room down
+// right away: hold the membership seat for a grace window and release it only
+// if the participant never comes back.
+//
+// The seat is held under the *old* socket id (so the room stays "alive" and
+// keeps its 2-person capacity) until either
+//   • a reconnecting socket re-joins the same room and reclaims it, or
+//   • the grace window expires → leaveRoom + room-destroyed for the peer.
+const DISCONNECT_GRACE_MS =
+  Number(process.env.SILENCIUM_DISCONNECT_GRACE_MS) || 60 * 1000;
+
+// old socket.id → { roomId, participantId, timer }
+const pendingDisconnects = new Map();
+
+function cancelPendingDisconnect(socketId) {
+  const pending = pendingDisconnects.get(socketId);
+  if (!pending) return false;
+  clearTimeout(pending.timer);
+  pendingDisconnects.delete(socketId);
+  return true;
+}
+
+// Tear a room down (used by both the manual-leave path and an expired grace)
+// and evict any sockets still in the Socket.IO room. Callers guarantee the
+// leaving user is already out of `roomManager` membership.
+function destroyRoom(roomId, leftSocketId) {
+  devLog(`💥 Room ${roomId} destroyed because user ${leftSocketId} left`);
+  io.to(roomId).emit('room-destroyed', {
+    message: 'A user left the room. Room has been destroyed.',
+    leftUserId: leftSocketId
+  });
+  // Remove all users from the room
+  io.in(roomId).socketsLeave(roomId);
+  // Clear the room
+  roomManager.deleteRoom(roomId);
+}
+
+// Grace expired without a re-join: this is a true abandon. Release the held
+// seat and apply the existing destroy-on-leave product rule.
+function finalizeDisconnect(oldSocketId, roomId) {
+  pendingDisconnects.delete(oldSocketId);
+
+  const users = roomManager.getUsers(roomId);
+  // The seat was already reclaimed (reconnect), released by a manual leave, or
+  // the room is gone — there is nothing left to finalize.
+  if (!users.includes(oldSocketId)) return;
+
+  if (!roomManager.leaveRoom(oldSocketId)) return;
+
+  io.to(roomId).emit('system-message', `❌ ${oldSocketId} left the room`);
+
+  const remaining = roomManager.getUsers(roomId);
+  if (remaining.length === 0) {
+    devLog(`💣 No users left in room ${roomId}`);
+    return;
+  }
+
+  destroyRoom(roomId, oldSocketId);
+  devLog(`🔴 ${oldSocketId} left room ${roomId}`);
+}
+
+// A re-join for `roomId` within the grace window reclaims the held seat:
+// cancel the pending destroy and swap the stale socket id for the new one.
+// `participantId` (client-generated, stable across a resume) disambiguates
+// which seat to reclaim when more than one is pending; clients that don't send
+// one fall back to the sole/oldest pending seat for the room.
+function reclaimPendingDisconnect(roomId, newSocketId, participantId) {
+  const users = roomManager.getUsers(roomId);
+  const candidates = [];
+
+  for (const [oldSocketId, pending] of [...pendingDisconnects]) {
+    if (pending.roomId !== roomId) continue;
+    if (!users.includes(oldSocketId)) {
+      // Seat already released or room destroyed — drop the stale bookkeeping.
+      cancelPendingDisconnect(oldSocketId);
+      continue;
+    }
+    candidates.push([oldSocketId, pending]);
+  }
+
+  if (candidates.length === 0) return null;
+
+  const chosen = participantId
+    ? candidates.find(([, pending]) => pending.participantId === participantId)
+    : candidates[0];
+
+  if (!chosen) return null;
+
+  const [oldSocketId, pending] = chosen;
+  clearTimeout(pending.timer);
+  pendingDisconnects.delete(oldSocketId);
+
+  if (!roomManager.replaceUser(roomId, oldSocketId, newSocketId)) return null;
+
+  devLog(`♻️ ${newSocketId} reclaimed ${oldSocketId}'s seat in room ${roomId} (grace cancelled)`);
+  return oldSocketId;
+}
 
 app.use(cors());
 
@@ -75,29 +175,36 @@ io.on('connection', (socket) => {
   devLog('🟢 New client connected:', socket.id);
 
   // 🏠 JOIN ROOM
-  socket.on('join-room', ({ roomId }) => {
+  socket.on('join-room', ({ roomId, participantId } = {}) => {
     if (!roomId || typeof roomId !== 'string') {
       socket.emit('join-error', 'Invalid room ID');
       return;
+    }
+
+    if (participantId && typeof participantId === 'string') {
+      socket.data.participantId = participantId;
     }
 
     // If this socket is already in a different room, leave it first.
     // roomManager owns the rooms map, so route this through it (B9 fix:
     // app.js must never touch `rooms` directly).
     if (socket.data.roomId && socket.data.roomId !== roomId) {
+      cancelPendingDisconnect(socket.id);
       const prevRoomId = roomManager.leaveRoom(socket.id);
       if (prevRoomId) {
         socket.leave(prevRoomId);
         if (roomManager.getUsers(prevRoomId).length > 0) {
-          io.to(prevRoomId).emit('room-destroyed', {
-            message: 'A user left the room. Room has been destroyed.',
-            leftUserId: socket.id
-          });
-          io.in(prevRoomId).socketsLeave(prevRoomId);
+          destroyRoom(prevRoomId, socket.id);
+        } else {
+          roomManager.deleteRoom(prevRoomId);
         }
-        roomManager.deleteRoom(prevRoomId);
       }
     }
+
+    // B14 — if the same participant dropped and is now back within the grace
+    // window, reclaim the held seat (and cancel the pending destroy) before
+    // capacity is checked, so a resume never hits "Room is full".
+    const reclaimedFrom = reclaimPendingDisconnect(roomId, socket.id, socket.data.participantId);
 
     const result = roomManager.joinRoom(roomId, socket.id);
 
@@ -112,9 +219,11 @@ io.on('connection', (socket) => {
     devLog(`🧑 ${socket.id} joined room ${roomId}`);
     devLog(`👥 Users in room ${roomId}:`, result.users);
 
-    const msg = result.users.length === 1
-      ? `🟢 ${socket.id} created the room`
-      : `✅ ${socket.id} joined the room`;
+    const msg = reclaimedFrom
+      ? `✅ ${socket.id} reconnected to the room`
+      : result.users.length === 1
+        ? `🟢 ${socket.id} created the room`
+        : `✅ ${socket.id} joined the room`;
 
     setTimeout(() => {
       io.to(roomId).emit('system-message', msg);
@@ -173,68 +282,58 @@ io.on('connection', (socket) => {
   });
 
   // 🚪 LEAVE ROOM
-  socket.on('leave-room', ({ roomId }) => {
+  socket.on('leave-room', ({ roomId } = {}) => {
     devLog(`🚪 ${socket.id} manually left room ${roomId}`);
-    
-    // Remove user from room
+
+    // A manual leave is intentional, not a backgrounding drop — never hold the
+    // seat for the B14 grace window.
+    cancelPendingDisconnect(socket.id);
+
     const actualRoomId = roomId || socket.data.roomId;
-    if (actualRoomId) {
-      const users = roomManager.getUsers(actualRoomId);
-      const userIndex = users.indexOf(socket.id);
-      if (userIndex !== -1) {
-        users.splice(userIndex, 1);
-        
-        if (users.length === 0) {
-          // No users left, delete the room
-          roomManager.deleteRoom(actualRoomId);
-        } else {
-          // Notify remaining users and destroy the room
-          devLog(`💥 Room ${actualRoomId} destroyed because user ${socket.id} left`);
-          io.to(actualRoomId).emit('room-destroyed', {
-            message: 'A user left the room. Room has been destroyed.',
-            leftUserId: socket.id
-          });
-          // Remove all users from the room
-          io.in(actualRoomId).socketsLeave(actualRoomId);
-          // Clear the room
-          roomManager.deleteRoom(actualRoomId);
-        }
-      }
+    if (!actualRoomId) return;
+
+    const removed = roomManager.removeUser(actualRoomId, socket.id);
+    socket.leave(actualRoomId);
+    socket.data.roomId = null;
+
+    if (!removed) return;
+
+    if (roomManager.getUsers(actualRoomId).length === 0) {
+      // No users left, the room was already cleared by removeUser.
+      devLog(`💣 No users left in room ${actualRoomId}`);
+    } else {
+      // Notify remaining users and destroy the room immediately.
+      destroyRoom(actualRoomId, socket.id);
     }
   });
 
   // ❌ DISCONNECT
   socket.on('disconnect', (reason) => {
-  devLog(`🔴 ${socket.id} disconnected due to: ${reason}`);
+    devLog(`🔴 ${socket.id} disconnected due to: ${reason}`);
 
-  // Add a grace period for reconnection (5 seconds)
-  setTimeout(() => {
-    const roomId = roomManager.leaveRoom(socket.id);
-    if (roomId) {
-      const msg = `❌ ${socket.id} left the room`;
-      io.to(roomId).emit('system-message', msg);
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
 
-      const users = roomManager.getUsers(roomId);
+    // B14 — hold the membership seat instead of leaving the room now. The app
+    // may have been backgrounded (Android drops the WebView transport); only a
+    // full grace window without a re-join counts as abandoning the room.
+    cancelPendingDisconnect(socket.id);
+    const timer = setTimeout(
+      () => finalizeDisconnect(socket.id, roomId),
+      DISCONNECT_GRACE_MS
+    );
+    if (typeof timer.unref === 'function') timer.unref();
 
-      if (users.length === 0) {
-        devLog(`💣 No users left in room ${roomId}`);
-      } else {
-        // Notify remaining users that someone left and destroy the room
-        devLog(`💥 Room ${roomId} destroyed because user ${socket.id} left`);
-        io.to(roomId).emit('room-destroyed', {
-          message: 'A user left the room. Room has been destroyed.',
-          leftUserId: socket.id
-        });
-        // Remove all users from the room
-        io.in(roomId).socketsLeave(roomId);
-        // Clear the room
-        roomManager.deleteRoom(roomId);
-      }
+    pendingDisconnects.set(socket.id, {
+      roomId,
+      participantId: socket.data.participantId,
+      timer
+    });
 
-      devLog(`🔴 ${socket.id} left room ${roomId}`);
-    }
-  }, 5000); // 5 second grace period
-});
+    devLog(
+      `⏳ ${socket.id} held in room ${roomId} for ${DISCONNECT_GRACE_MS}ms reconnect grace`
+    );
+  });
 });
 
 const PORT = process.env.PORT || 3001;

@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { Capacitor } from '@capacitor/core';
+import { App } from '@capacitor/app';
 import { socket, getSocketUrl } from '../utils/socket';
 import { getShareOrigin } from '../utils/serverUrl';
 import {
@@ -20,6 +22,25 @@ import { renderWithCode } from '../i18n/richText';
 const MAX_IMAGE_FILE_BYTES = 6 * 1024 * 1024;
 const MAX_ENCRYPTED_IMAGE_BYTES = 3 * 1024 * 1024;
 
+// B14 — a stable, session-scoped id for "this participant". The relay uses it
+// to reclaim a held seat when the Android WebView drops the socket while the
+// app is backgrounded and the client re-joins the same room on resume. It is
+// kept in sessionStorage so recovery still works if the WebView reloads the
+// page instead of just resuming it. Not a key cache — no key material here.
+const PARTICIPANT_ID_KEY = 'silencium.participantId';
+const newParticipantId = () => {
+  try {
+    const existing = window.sessionStorage.getItem(PARTICIPANT_ID_KEY);
+    if (existing) return existing;
+    const id = crypto.randomUUID();
+    window.sessionStorage.setItem(PARTICIPANT_ID_KEY, id);
+    return id;
+  } catch {
+    // Storage can be unavailable in some WebView privacy modes.
+    return crypto.randomUUID();
+  }
+};
+
 export default function ChatRoom() {
   const { t } = useI18n();
   // Socket listeners are registered once per room; `tRef` lets those long-lived
@@ -32,6 +53,12 @@ export default function ChatRoom() {
 
   const cryptoWorkerRef = useRef(null);
   const joinedRef = useRef(false);
+  // B14 — identity the relay uses to reclaim our seat across a background drop.
+  const participantIdRef = useRef(null);
+  if (participantIdRef.current === null) participantIdRef.current = newParticipantId();
+  // Mirror of the public-key state so the app-resume handler can re-emit it
+  // without re-subscribing every time a key is generated.
+  const myPublicKeyRef = useRef(null);
   const receivedKey = useRef(null);
   const sharedKeyRef = useRef(null);
   const hasSharedKeyRef = useRef(false);
@@ -308,12 +335,58 @@ export default function ChatRoom() {
     cryptoWorkerRef.current = new CryptoWorker();
     initSodium().then(async () => {
       const keyPair = await generateKeyPair();
+      myPublicKeyRef.current = keyPair.publicKey;
       setMyPublicKey(keyPair.publicKey);
     });
     return () => {
       cryptoWorkerRef.current?.terminate();
     };
   }, []);
+
+  // B14 — recover the room when the app returns to the foreground. An Android
+  // WebView drops the Socket.IO transport while backgrounded; the relay holds
+  // our seat for the 60 s grace window, so re-connect, re-join the same room,
+  // and re-emit our public key on resume. `visibilitychange` covers the web and
+  // older shells, `appStateChange` the native Capacitor shell.
+  useEffect(() => {
+    if (!roomId) return;
+
+    const resume = () => {
+      if (!socket.connected) socket.connect();
+      socket.emit('join-room', { roomId, participantId: participantIdRef.current });
+      const publicKey = myPublicKeyRef.current;
+      if (publicKey) {
+        socket.emit('send-public-key', { roomId, publicKey: Array.from(publicKey) });
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') resume();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    let appStateListener = null;
+    let disposed = false;
+
+    if (Capacitor.isNativePlatform()) {
+      App.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) resume();
+      })
+        .then((listener) => {
+          if (disposed) listener.remove();
+          else appStateListener = listener;
+        })
+        .catch(() => {
+          /* plugin unavailable — visibilitychange already covers us */
+        });
+    }
+
+    return () => {
+      disposed = true;
+      document.removeEventListener('visibilitychange', handleVisibility);
+      appStateListener?.remove?.();
+    };
+  }, [roomId]);
 
   // Reset image handlers when room changes
   useEffect(() => {
@@ -325,7 +398,7 @@ export default function ChatRoom() {
   useEffect(() => {
     const handleConnect = () => {
       setMySocketId(socket.id);
-      socket.emit("join-room", { roomId });
+      socket.emit("join-room", { roomId, participantId: participantIdRef.current });
       setEncryptionStatus("socket-connected");
 
       if (myPublicKey) {
@@ -378,7 +451,7 @@ export default function ChatRoom() {
       }
       // Re-join the room after reconnection
       if (roomId) {
-        socket.emit("join-room", { roomId });
+        socket.emit("join-room", { roomId, participantId: participantIdRef.current });
       }
     };
 
@@ -433,6 +506,14 @@ export default function ChatRoom() {
 
     const setup = async () => {
       if (!socket.connected) socket.connect();
+
+      // The socket may already be connected (e.g. the room screen was opened
+      // after the home screen dialled the relay), in which case no `connect`
+      // event fires and the join would otherwise be skipped. Re-joining is
+      // idempotent server-side, and it lets the relay reclaim a B14 seat.
+      if (socket.connected) {
+        socket.emit("join-room", { roomId, participantId: participantIdRef.current });
+      }
 
       socket.on("room-destroyed", ({ message }) => {
         setMessages(prev => [

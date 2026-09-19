@@ -4,13 +4,17 @@ Companion to [`CUT-LIST.md`](./CUT-LIST.md). Records what has been executed from
 **§2 REMOVE/DISABLE** and **§4 blockers/defects**, and what is still open.
 
 - **Session scope:** CUT-LIST §3 steps **1–10** (through B5, B12, and the
-  R3/R20/R21 docs honesty pass). Step 11 not started.
+  R3/R20/R21 docs honesty pass), plus **B14** (60 s reconnect grace, mobile
+  app-switch fix). Step 11 not started.
 - **Product lock honored:** no accounts; ephemeral rooms; E2EE text+images only;
   existing Libsodium crypto untouched; ciphertext-only relay.
 - **Verification:**
-  - `npx eslint src` exit 0 · `npm run build` exit 0 (85 modules).
+  - `npx eslint src` exit 0 · `npm run build` exit 0.
   - `tools/smoke-test.cjs` **18 passed / 0 failed** against the **production**
     server with `SILENCIUM_EXPECT_SPA=1` (sockets + HTTP/SPA checks).
+  - `tools/b14-grace-test.cjs` **8 passed / 0 failed** — grace hold, re-join
+    cancel, post-grace room still 2-person, true-abandon destroy, immediate
+    manual leave, and 60 s default asserted against source. See §9.
   - Production `GET /` and `/chat?room=…` → **200 `text/html`**; `/health` →
     **200**; built JS asset → 200. Headless Chrome renders the production SPA,
     and clicking **Create Chat Room** navigates to a 22-char base64url room id
@@ -19,9 +23,11 @@ Companion to [`CUT-LIST.md`](./CUT-LIST.md). Records what has been executed from
     `CanvasImageRenderer.jsx`, `hacker-theme.css`.
 - **Diff size:** Phase 1 was −1097 / +172 across 17 tracked files; Phase 2 adds
   edits to `server/app.js`, `client/src/pages/CreateRoom.jsx`, `README.md`,
-  `FEATURES.md`, `screenshots/README.md`, `tools/smoke-test.cjs`. Cumulative
-  tracked diff: **−1392 / +580 across 20 files** (untracked: `CUT-LIST.md`,
-  `CUT-PROGRESS.md`, `tools/`).
+  `FEATURES.md`, `screenshots/README.md`, `tools/smoke-test.cjs`. B14 adds
+  `server/app.js`, `server/rooms/roomManager.js`,
+  `client/src/pages/ChatRoom.jsx`, `client/android/app/build.gradle` and
+  `tools/b14-grace-test.cjs` (untracked: `CUT-LIST.md`, `CUT-PROGRESS.md`,
+  `tools/`).
 
 ---
 
@@ -38,11 +44,11 @@ Companion to [`CUT-LIST.md`](./CUT-LIST.md). Records what has been executed from
 
 | Status | IDs |
 |---|---|
-| ✅ **Resolved** | B1, B2 (environment), B4, B5, B6, B7, B9, B12 |
-| ⬜ **Left / deferred** | B3, B8, B10, B11, B13, B14, B15 |
+| ✅ **Resolved** | B1, B2 (environment), B4, B5, B6, B7, B9, B12, **B14** |
+| ⬜ **Left / deferred** | B3, B8, B10, B11, B13, B15 |
 
 **Totals:** 21 of 21 actionable R items done (R22 excluded by design) ·
-8 of 15 B items resolved. Every R# (R1–R22) and B# (B1–B15) is accounted for below.
+9 of 15 B items resolved. Every R# (R1–R22) and B# (B1–B15) is accounted for below.
 
 ---
 
@@ -131,6 +137,7 @@ worker path. `K3` now rides the binary transport. `K9` theme kept, trimmed per R
 | B7 | ✅ Fixed by R1. |
 | B9 | ✅ Fixed — room cleanup via `roomManager`. |
 | B12 | ✅ Fixed — 128-bit CSPRNG room ids (base64url). |
+| B14 | ✅ **Fixed (B14 phase).** Disconnect grace is now **60 s** and the pending destroy is **cancelled when the same participant re-joins** the same room (Android app-switch). Manual leave still tears down immediately. See §9. |
 | B4 | ✅ **Fixed (Mobile phase).** Hardcoded relay URL replaced by runtime resolution: saved user URL → `VITE_SERVER_URL` → browser default (`window.location.origin` prod / `http://localhost:3001` dev) → native settings gate. See §8. |
 | B1 | Resolved by environment (policy is `danger-full-access` this session); no repo change. |
 | B2 | Satisfied (Node v22.19.0, npm 10.9.3); no repo change. |
@@ -144,7 +151,6 @@ worker path. `K3` now rides the binary transport. `K9` theme kept, trimmed per R
 | B10 | libsodium `crypto` externalized warning | Expected, cosmetic; build succeeds. |
 | B11 | Robustness gaps | **Open — step 11.** No rate limiting / text-size cap; client `receive-message` has no `try/catch` around `crypto_secretbox_open_easy`; `join-error` surfaced only via `alert()`. |
 | B13 | Bundle size | **Open — step 11.** Build emits `index-*.js` ~1.03 MB (336 KB gzip) + `crypto.worker` ~750 KB. Consider lazy-loading the crypto worker. |
-| B14 | Aggressive teardown (5 s grace) | **Open — step 11.** Product decision; consider longer/reconnect-aware grace before destroying on `disconnect`. |
 | B15 | Stale tooling warnings | Non-blocking: browserslist/caniuse-lite ~15 months old; `tailwind.config.js` is v3-style with Tailwind v4. |
 
 ---
@@ -260,9 +266,9 @@ Per CUT-LIST §3, only **step 11** remains (deferred/optional):
 - **B11** — relay rate limiting / text-size cap; client `try/catch` around
   `crypto_secretbox_open_easy`; replace `alert()` with in-UI errors.
 - **B13** — lazy-load the crypto worker / bundle splitting.
-- **B14** — reconnect-aware teardown grace (product decision).
 
-Nothing in step 11 blocks the MVP. **B4** is now done (Mobile phase, §8).
+Nothing in step 11 blocks the MVP. **B4** is now done (Mobile phase, §8) and
+**B14** is now done (§9).
 
 ---
 
@@ -503,4 +509,67 @@ pokemon-handbook Flutter client (`lib/features/update/*`) and its
   covered by the unit + headless tests plus APK static verification, with the
   device checklist in `MOBILE-ANDROID.md § Manual check list (APK)` (items
   13–16 are the new update steps).
+
+---
+
+## 9. B14 — 60 s reconnect grace (mobile app-switch fix)
+
+**Problem.** On Android, backgrounding the app (e.g. switching away to paste the
+invite link) makes the WebView drop the Socket.IO transport. The server saw
+`disconnect` and, after a **5 s** grace, destroyed the room even though the
+participant was coming right back. The timer was also never cancelled when the
+participant reconnected with a new socket id — by then the room was gone, or the
+re-join hit **Room is full** because the stale socket id still occupied the
+second seat.
+
+**Server** (`server/app.js`, `server/rooms/roomManager.js`)
+
+- `DISCONNECT_GRACE_MS = 60 * 1000` (overridable via
+  `SILENCIUM_DISCONNECT_GRACE_MS` for tests only).
+- On `disconnect`, the participant's seat is **kept** in `roomManager` and a
+  pending timer is stored in `pendingDisconnects` (keyed by the **old**
+  socket id, carrying `roomId` + the client's `participantId`). No `leaveRoom`
+  happens yet, so the room is still "alive" and still counts as 2-person.
+- On `join-room`, **before** the capacity check, `reclaimPendingDisconnect()`
+  looks for a pending seat in the same room. A match (exact `participantId`
+  when the client sends one, otherwise the pending seat itself) **clears the
+  timer** and swaps the stale socket id for the new one via
+  `roomManager.replaceUser()` — no destroy, no leaked seat, no "Room is full".
+- Only if the grace expires without a re-join does `finalizeDisconnect()` call
+  `leaveRoom()` and, when another participant remains, emit `room-destroyed`
+  (the destroy-on-leave product rule for **true** abandons is unchanged).
+- **Manual `leave-room` is still immediate**: it cancels any pending timer for
+  that socket and calls `destroyRoom()` for the remaining peer right away.
+- `roomManager.joinRoom` is now idempotent for an already-present socket id, so
+  a repeated join (connect handler + resume re-join) cannot double-book a seat.
+
+**Client** (`client/src/pages/ChatRoom.jsx`)
+
+- A `participantId` (session-scoped, `sessionStorage`-backed, no key material)
+  is sent with every `join-room`, so the relay can reclaim the right seat even
+  when the WebView reloads the page. Purely a B14 identity — **no new key-cache
+  protocol and no crypto change**.
+- A new effect listens for Capacitor `appStateChange` → `isActive` (native
+  shell) and `visibilitychange` → `visible` (web/older shells). On resume it
+  ensures `socket.connect()`, re-emits `join-room` for the same `roomId`, and
+  re-emits the public key if one already exists.
+- The room setup also re-joins if the socket is already connected on mount, and
+  the `connect`/`reconnect` handlers now include the `participantId`.
+- Encryption UI copy, late-joiner key relay, room capacity (2), and ciphertext
+  relay are untouched.
+
+**Verification**
+
+- `tools/b14-grace-test.cjs` (new) spawns a relay with a 2 s test grace and
+  asserts: seat held on disconnect; re-join accepted with a new socket id;
+  pending destroy cancelled (no `room-destroyed` after the original deadline);
+  reclaimed room still rejects a third peer; no re-join → destroyed after the
+  grace; manual leave → destroyed for the peer in < 600 ms; and the shipped
+  default is 60 s. **8 passed / 0 failed.**
+- `tools/smoke-test.cjs` **18 passed / 0 failed** with `SILENCIUM_EXPECT_SPA=1`.
+- `npx eslint src` exit 0 · `npm run build` exit 0.
+- APK rebuilt to `dist-mobile/Silencium-debug.apk` with `versionCode 3`.
+
+> Out of scope for B14 (unchanged): the "Establishing Encryption…" hang when
+> alone / lost public-key races, room capacity, crypto, and the update system.
 
