@@ -26,6 +26,20 @@ export default {
   'home.serverSettings': '伺服器設定',
   'home.languageLabel': '語言',
 
+  'home.createTab': '建立',
+  'home.joinTab': '加入',
+  'home.roomIdLabel': '房間 ID 或邀請連結',
+  'home.keyLabel': '共用房間金鑰',
+  'home.keyPlaceholder': '口令（≥12 個字元）或點擊產生',
+  'home.keyHint':
+    '至少 {min} 個字元。產生的金鑰有 128 位元隨機性。金鑰不會傳送到伺服器——請透過其他管道告訴對方。',
+  'home.keyRequired': '請輸入共用房間金鑰。',
+  'home.keyTooWeak': '房間金鑰太弱——至少 12 個字元，或點擊產生。',
+  'home.generateKey': '產生',
+  'home.feature.roomKey': '口令認證的金鑰交換',
+  'home.showRelay': '顯示中繼',
+  'home.hideRelay': '隱藏中繼',
+
   // --- 設定 / 中繼 URL ---------------------------------------------------
   'settings.title': '⚙️ 伺服器設定',
   'settings.copy':
@@ -82,6 +96,23 @@ export default {
   'chat.alertImageTooLarge': '壓縮後圖片仍然過大。請使用較小的圖片。',
   'chat.alertEncryptFailed': '圖片加密失敗。請重試。',
   'chat.alertImageSendFailed': '圖片傳送失敗。請重試。',
+
+  'chat.keyGateCopy': '此邀請含房間 ID，還需要共用房間金鑰（透過其他管道取得）。',
+  'chat.keyGateContinue': '進入房間',
+  'chat.shareKeyHint': '請單獨分享房間金鑰（不要放進連結）。雙方必須使用同一金鑰。',
+  'chat.authVerifying': '⏳ 正在驗證共用房間金鑰…',
+  'chat.authFailed': '⚠️ 房間金鑰驗證失敗。金鑰錯誤，或中繼試圖中間人攻擊——聊天已封鎖。',
+  'chat.authFailedBanner': '❌ 驗證失敗 — 請離開並用正確金鑰重試',
+  'chat.fingerprintLabel': '驗證碼',
+  'chat.fingerprintReady': '🔏 驗證碼：{code}（請與對方核對）',
+  'chat.decryptFailed': '⚠️ 無法解密訊息（可能被竄改或金鑰錯誤）。',
+  'chat.alertTextTooLong': '訊息過長。',
+  'chat.webrtcActive': '📡 已建立直連通道（WebRTC）',
+  'chat.webrtcFallback': '📡 直連不可用 — 改用加密中繼',
+  'chat.transportLabel': '傳輸',
+  'chat.transportWebrtc': 'WebRTC',
+  'chat.transportConnecting': 'WebRTC…',
+  'chat.transportSocket': '加密中繼',
 
   // --- 應用程式內更新 -----------------------------------------------------
   'update.sectionTitle': '應用程式更新',

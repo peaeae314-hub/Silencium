@@ -45,6 +45,48 @@ export class CryptoWorker {
     return new Uint8Array(result);
   }
 
+  async deriveAuthKey(passphrase, roomId) {
+    const result = await this.execute('deriveAuthKey', { passphrase, roomId });
+    return new Uint8Array(result);
+  }
+
+  async bindSessionKey(kxKey, authKey) {
+    const result = await this.execute('bindSessionKey', {
+      kxKey: Array.from(kxKey),
+      authKey: Array.from(authKey)
+    });
+    return new Uint8Array(result);
+  }
+
+  async computeAuthProof(authKey, roomId, myPublicKey, theirPublicKey) {
+    const result = await this.execute('computeAuthProof', {
+      authKey: Array.from(authKey),
+      roomId,
+      myPublicKey: Array.from(myPublicKey),
+      theirPublicKey: Array.from(theirPublicKey)
+    });
+    return new Uint8Array(result);
+  }
+
+  async verifyAuthProof(authKey, proof, roomId, myPublicKey, theirPublicKey) {
+    return this.execute('verifyAuthProof', {
+      authKey: Array.from(authKey),
+      proof: Array.from(proof),
+      roomId,
+      myPublicKey: Array.from(myPublicKey),
+      theirPublicKey: Array.from(theirPublicKey)
+    });
+  }
+
+  async computeFingerprint(authKey, roomId, myPublicKey, theirPublicKey) {
+    return this.execute('computeFingerprint', {
+      authKey: Array.from(authKey),
+      roomId,
+      myPublicKey: Array.from(myPublicKey),
+      theirPublicKey: Array.from(theirPublicKey)
+    });
+  }
+
   async encrypt(message, key, nonce = null) {
     const result = await this.execute('encrypt', {
       message: Array.from(message),

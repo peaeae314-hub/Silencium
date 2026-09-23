@@ -16,6 +16,15 @@ import { Preferences } from '@capacitor/preferences';
 
 export const SERVER_URL_KEY = 'silencium.server-url';
 
+/**
+ * Optional baked-in Capacitor default when Settings has nothing saved and
+ * `VITE_SERVER_URL` was not set at build time. Leave null so first launch
+ * still opens Settings (normal UX). Ship builds should prefer VITE_SERVER_URL.
+ * Normal browser users never type a tunnel URL — production uses same-origin.
+ */
+export const BUILTIN_NATIVE_DEFAULT_URL = null;
+
+
 /** True when running inside the Capacitor Android/iOS shell, false in a browser. */
 export const isNativeApp = () => Capacitor.isNativePlatform();
 
@@ -168,6 +177,11 @@ export function resolveServerUrl() {
   }
 
   if (!isNativeApp()) return browserDefaultUrl();
+
+  if (BUILTIN_NATIVE_DEFAULT_URL) {
+    const result = normalizeBaseUrl(BUILTIN_NATIVE_DEFAULT_URL);
+    if (result.url) return result.url;
+  }
   return null;
 }
 

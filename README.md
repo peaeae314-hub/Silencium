@@ -33,9 +33,11 @@ Silencium deliberately does **not** have, and does not pretend to have:
   always save or screenshot an image they can see.
 - Accounts, groups, admin roles, voice/video calls, read receipts, cloud
   history, or multi-device sync.
-- Verified identities. There is no fingerprint or TOFU check, so a malicious
-  relay could mount a man-in-the-middle attack — see
-  [unauthenticated key exchange](#known-limitation-unauthenticated-key-exchange).
+- Perfect Forward Secrecy or “no metadata”. Session keys are per-room (not a
+  ratchet); the relay still sees membership, timing, and sizes.
+- Accounts, identity provider, or long-term user keys. Verification is via a
+  shared room passphrase (see [Security Model](#-security-model)), not TOFU
+  against a directory.
 - TLS. The server speaks plain HTTP; put it behind a TLS reverse proxy for any
   real deployment.
 
@@ -182,22 +184,40 @@ It is therefore accurate to say the server relays ciphertext it cannot decrypt �
 not that it is "completely blind". A compromised or malicious relay can also
 interfere with key exchange, as noted next.
 
-### Known limitation: unauthenticated key exchange
+### Passphrase-authenticated key exchange (B8)
 
-Public keys are relayed through the server with **no fingerprint comparison and
-no TOFU pinning**. A malicious or compromised relay could substitute its own
-public key, complete a separate key exchange with each participant, and read or
-alter messages. This is inherent to an unauthenticated `crypto_kx` handshake.
+Public keys are still relayed through the server, but both peers prove knowledge
+of a **shared room key / passphrase** that never leaves the clients:
 
-Fixing it requires an out-of-band fingerprint/verification step, which is **not
-part of this MVP**. Until then, treat the relay as trusted infrastructure.
+1. Each side derives an auth key with Web Crypto `PBKDF2-SHA256` (210k iterations; room-id salt),
+   salted by the room id.
+2. After X25519 `crypto_kx`, each side MACs a canonical transcript
+   (room id + both public keys) with that auth key and relays the proof.
+3. On success, chat unlocks and a short verification code is shown. On failure
+   (wrong passphrase or substituted pubkeys), chat stays blocked.
+4. The session encryption key is bound to the auth key, so a MITM cannot decrypt
+   even if the UI gate were bypassed.
 
-### Room ids
+**Strength rule:** manual keys must be ≥12 characters; the Generate button
+produces 128 bits of CSPRNG material (base64url). The relay rejects join
+payloads that accidentally include passphrase fields and rate-limits handshake
+events (B11); it never receives the raw secret.
+
+This is **not** Perfect Forward Secrecy and **not** a claim of “no metadata”.
+
+### Room ids + room keys
 
 Room ids are 128 bits from the browser CSPRNG (`crypto.getRandomValues`),
-base64url-encoded (22 URL-safe characters). A room id is a join capability, not
-an encryption key: anyone who has the link can occupy the second (and last) seat
-while the room is open. There is no room password.
+base64url-encoded (22 URL-safe characters). A room id is a join capability.
+The **room key** is a separate shared secret: invite links encode the room id
+only; share the key out-of-band. Anyone with the link can still occupy the
+second seat, but without the matching key they cannot pass verification.
+
+### Retained plaintext (ops)
+
+`ops/retained/` is **not** enabled by the normal relay. It exists only for
+explicit ops/recorder workflows. Default is off — do not wire automatic
+plaintext retention into `server/app.js`.
 
 ### Images
 
@@ -216,19 +236,23 @@ while the room is open. There is no room password.
 
 ### Creating a room
 
-1. Click **Create Chat Room** on the home page.
-2. A 128-bit random room id is generated and put in the URL.
-3. Share the link with your contact.
+1. On the home page, open **Create**, enter or **Generate** a room key (≥12
+   chars / 128-bit generated), then create the room.
+2. A 128-bit random room id is put in the URL; the key stays in session storage.
+3. Share the invite link **and** the room key (separately) with your contact.
+4. You do not need to paste a tunnel/relay URL for normal browser use (same
+   origin in production). Settings still allow an advanced override.
 
 ### Joining a room
 
-Open the shared link (`/chat?room=<id>`). The first two sockets in a room are
-accepted; a third connection is rejected with **Room is full**.
+Paste the invite link or room id, enter the same room key, and join — or open
+`/chat?room=<id>` and enter the key when prompted. The first two sockets in a
+room are accepted; a third connection is rejected with **Room is full**.
 
 ### Room destruction
 
 - Rooms are destroyed when a participant leaves or disconnects (a disconnect
-  gets a 5-second grace period for reconnection).
+  gets a 60-second grace period for reconnection (B14)).
 - All remaining participants are notified and redirected to the home page.
 - No orphaned rooms: membership lives only in server memory.
 - There is no inactivity timer — a room stays open while its participants are
@@ -296,8 +320,9 @@ ISC.
 
 - This is a demonstration project for end-to-end encrypted messaging concepts,
   not an audited secure messenger.
-- The relay cannot decrypt content, but it can see metadata and — because key
-  exchange is unauthenticated — could in principle man-in-the-middle a session.
+- The relay cannot decrypt content, but it can see metadata. Room-key
+  authentication (B8) detects a relay that substitutes public keys when both
+  peers share the same passphrase; it is not a full identity system or PFS.
 - There is no screenshot or download protection: anything displayed can be
   captured.
 - There is no TLS in this repo. Terminate TLS in front of the relay before
@@ -319,17 +344,18 @@ well-reviewed primitives used by many messengers; that does not by itself make
 Silencium's protocol equivalent to Signal's.
 
 **Q: How do you prevent man-in-the-middle attacks?**
-A: **Currently, you don't get a guarantee.** The relay passes public keys
-between peers but there is no fingerprint comparison or TOFU pinning, so a
-malicious relay could substitute keys and MITM the session. This is a known,
-documented MVP limitation — see
-[unauthenticated key exchange](#known-limitation-unauthenticated-key-exchange).
+A: Both peers share a room key / passphrase out-of-band. After X25519 key
+exchange, each side proves knowledge of that key over the pubkey transcript
+(B8). Matching keys auto-verify and show a short verification code; wrong keys
+or substituted pubkeys fail closed. This is not Perfect Forward Secrecy and not
+a long-term identity directory — see
+[Passphrase-authenticated key exchange](#passphrase-authenticated-key-exchange-b8).
 
 **Q: Can the server read my messages?**
 A: It receives only ciphertext and nonces and holds no private keys, so it
 cannot decrypt normal traffic. It is not "completely blind" though: it sees
-metadata such as room ids, connection timing, and message sizes, and its key
-relay is unauthenticated.
+metadata such as room ids, connection timing, and message sizes. Public keys
+are relayed in the clear but authenticated by the room-key MAC (B8).
 
 **Q: What if someone intercepts the connection?**
 A: Message and image payloads appear as ciphertext. Because the relay speaks
@@ -341,7 +367,7 @@ controls the relay could also attempt the MITM described above.
 
 **Q: How do rooms work?**
 A: Up to two participants per room, joined by link. When either participant
-leaves or disconnects (after a 5-second grace), the room is destroyed and any
+leaves or disconnects (after a 60-second grace (B14)), the room is destroyed and any
 remaining participant is returned to the home page.
 
 **Q: How long do rooms last?**
@@ -373,9 +399,9 @@ captured or saved by the recipient.
 ### Technical
 
 **Q: What happens if I lose connection?**
-A: The client attempts to reconnect. A disconnect gives the room a 5-second
-grace period; if reconnection does not happen in time, the room is destroyed for
-both participants.
+A: The client attempts to reconnect. A disconnect gives the room a 60-second
+grace period (B14); if reconnection does not happen in time, the room is
+destroyed for both participants.
 
 **Q: Does it work on mobile?**
 A: Yes, the layout is responsive. Mobile browsers still allow screenshots.
@@ -393,5 +419,7 @@ sizes. Message and image contents are ciphertext. There is no analytics or
 tracking in the app.
 
 **Q: Can I verify who the other person is?**
-A: Not in-app. There is no identity verification or key fingerprint comparison;
+A: Yes — both sides enter the same shared room key. Matching keys auto-verify
+and show a short verification code; a malicious relay substituting pubkeys
+fails closed. There is still no account-based identity directory or TOFU —
 confirm out-of-band if it matters.

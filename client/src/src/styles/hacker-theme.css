@@ -635,3 +635,109 @@ button:hover {
   color: var(--green);
 }
 
+
+/* ---------------------------------------------------------------------------
+   Room key create/join forms + demoted relay bar (plan ②)
+   --------------------------------------------------------------------------- */
+
+.home-mode-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.home-mode-tabs button {
+  padding: 0.4rem 1rem;
+  background: transparent;
+  border: 1px solid var(--green-dim);
+  color: var(--green-dim);
+  border-radius: 0.4rem;
+}
+
+.home-mode-tabs button.active {
+  border-color: var(--green);
+  color: var(--green);
+  background: #003300;
+}
+
+.room-key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 26rem;
+  margin-bottom: 1.5rem;
+  text-align: left;
+}
+
+.room-key-label {
+  color: var(--green);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.room-key-hint {
+  color: var(--green-dim);
+  font-size: 0.7rem;
+  margin: 0 0 0.25rem;
+  line-height: 1.35;
+}
+
+.room-key-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.room-key-row .join-input,
+.room-key-full {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  background: #001a00;
+  border: 1px solid var(--green);
+  color: var(--green);
+  border-radius: 0.4rem;
+}
+
+.room-key-row button,
+.room-key-submit {
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: 1px solid var(--green);
+  color: var(--green);
+  border-radius: 0.4rem;
+}
+
+.room-key-submit {
+  margin-top: 0.5rem;
+  font-weight: 600;
+}
+
+.home-relay-toggle {
+  background: transparent;
+  border: none;
+  color: var(--green-dim);
+  font-size: 0.7rem;
+  padding: 0.25rem 0.4rem;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.fingerprint-code {
+  margin-top: 0.35rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.04em;
+}
+
+.transport-label {
+  margin-top: 0.25rem;
+  opacity: 0.85;
+  font-size: 0.7rem;
+}
+
+.chat-share-hint {
+  margin-top: 0.35rem;
+  font-size: 0.7rem;
+  color: var(--green-dim);
+}

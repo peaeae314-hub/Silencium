@@ -26,6 +26,20 @@ export default {
   'home.serverSettings': '服务器设置',
   'home.languageLabel': '语言',
 
+  'home.createTab': '创建',
+  'home.joinTab': '加入',
+  'home.roomIdLabel': '房间 ID 或邀请链接',
+  'home.keyLabel': '共享房间密钥',
+  'home.keyPlaceholder': '口令（≥12 个字符）或点击生成',
+  'home.keyHint':
+    '至少 {min} 个字符。生成的密钥有 128 位随机性。密钥不会发送到服务器——请通过其他渠道告诉对方。',
+  'home.keyRequired': '请输入共享房间密钥。',
+  'home.keyTooWeak': '房间密钥太弱——至少 12 个字符，或点击生成。',
+  'home.generateKey': '生成',
+  'home.feature.roomKey': '口令认证的密钥交换',
+  'home.showRelay': '显示中继',
+  'home.hideRelay': '隐藏中继',
+
   // --- 设置 / 中继 URL ---------------------------------------------------
   'settings.title': '⚙️ 服务器设置',
   'settings.copy':
@@ -82,6 +96,23 @@ export default {
   'chat.alertImageTooLarge': '压缩后图片仍然过大。请使用更小的图片。',
   'chat.alertEncryptFailed': '图片加密失败。请重试。',
   'chat.alertImageSendFailed': '图片发送失败。请重试。',
+
+  'chat.keyGateCopy': '此邀请含房间 ID，还需要共享房间密钥（通过其他渠道获得）。',
+  'chat.keyGateContinue': '进入房间',
+  'chat.shareKeyHint': '请单独分享房间密钥（不要放进链接）。双方必须使用同一密钥。',
+  'chat.authVerifying': '⏳ 正在验证共享房间密钥…',
+  'chat.authFailed': '⚠️ 房间密钥验证失败。密钥错误，或中继试图中间人攻击——聊天已阻止。',
+  'chat.authFailedBanner': '❌ 验证失败 — 请离开并用正确密钥重试',
+  'chat.fingerprintLabel': '验证码',
+  'chat.fingerprintReady': '🔏 验证码：{code}（请与对方核对）',
+  'chat.decryptFailed': '⚠️ 无法解密消息（可能被篡改或密钥错误）。',
+  'chat.alertTextTooLong': '消息过长。',
+  'chat.webrtcActive': '📡 已建立直连通道（WebRTC）',
+  'chat.webrtcFallback': '📡 直连不可用 — 改用加密中继',
+  'chat.transportLabel': '传输',
+  'chat.transportWebrtc': 'WebRTC',
+  'chat.transportConnecting': 'WebRTC…',
+  'chat.transportSocket': '加密中继',
 
   // --- 应用内更新 ---------------------------------------------------------
   'update.sectionTitle': '应用更新',

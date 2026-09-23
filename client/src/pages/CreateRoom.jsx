@@ -3,6 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { getSocketUrl } from '../utils/socket';
 import { useI18n } from '../i18n/context';
 import LanguageSwitcher from '../components/LanguageSwitcher';
+import {
+  generateRoomKey,
+  validateRoomKey,
+  storeRoomKey,
+  MIN_ROOM_KEY_LENGTH,
+} from '../crypto/roomKey';
 
 // B12 — room ids are join capabilities, so they must be unguessable.
 // 16 bytes (128 bits) from the CSPRNG, base64url-encoded (22 URL/query-safe
@@ -17,6 +23,7 @@ const FEATURE_KEYS = [
   'home.feature.selfDestruct',
   'home.feature.e2ee',
   'home.feature.images',
+  'home.feature.roomKey',
 ];
 
 const generateRoomId = () => {
@@ -31,6 +38,7 @@ const generateRoomId = () => {
 
 // Accepts a full invite link (`…/chat?room=<id>`), a bare `?room=<id>` or a
 // room id. A native app has no address bar, so pasting the link is the join path.
+// The room key/passphrase is NEVER taken from the URL — share it out-of-band.
 const extractRoomId = (raw) => {
   const value = (raw || '').trim();
   if (!value) return '';
@@ -49,25 +57,50 @@ const extractRoomId = (raw) => {
 export default function CreateRoom() {
   const navigate = useNavigate();
   const { t } = useI18n();
-  const [joinValue, setJoinValue] = useState('');
+  const [mode, setMode] = useState('create'); // 'create' | 'join'
+  const [roomIdInput, setRoomIdInput] = useState('');
+  const [roomKey, setRoomKey] = useState('');
   // Store the i18n key (not the rendered string) so a later language switch
   // re-translates the visible error instead of freezing it.
-  const [joinErrorKey, setJoinErrorKey] = useState('');
+  const [errorKey, setErrorKey] = useState('');
+  const [showAdvancedRelay, setShowAdvancedRelay] = useState(false);
 
-  const handleCreateRoom = () => {
+  const goToRoom = (roomId, key) => {
+    storeRoomKey(roomId, key);
+    navigate(`/chat?room=${encodeURIComponent(roomId)}`);
+  };
+
+  const handleCreateRoom = (event) => {
+    event.preventDefault();
+    const check = validateRoomKey(roomKey);
+    if (!check.ok) {
+      setErrorKey(check.errorKey);
+      return;
+    }
+    setErrorKey('');
     const roomId = generateRoomId();
-    navigate(`/chat?room=${roomId}`);
+    goToRoom(roomId, check.key);
   };
 
   const handleJoinRoom = (event) => {
     event.preventDefault();
-    const roomId = extractRoomId(joinValue);
+    const roomId = extractRoomId(roomIdInput);
     if (!roomId) {
-      setJoinErrorKey('home.joinError');
+      setErrorKey('home.joinError');
       return;
     }
-    setJoinErrorKey('');
-    navigate(`/chat?room=${encodeURIComponent(roomId)}`);
+    const check = validateRoomKey(roomKey);
+    if (!check.ok) {
+      setErrorKey(check.errorKey);
+      return;
+    }
+    setErrorKey('');
+    goToRoom(roomId, check.key);
+  };
+
+  const handleGenerateKey = () => {
+    setRoomKey(generateRoomKey());
+    setErrorKey('');
   };
 
   return (
@@ -80,48 +113,121 @@ export default function CreateRoom() {
       </header>
 
       <main className="home-main">
-        {/* Logo with orange padlock */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-green-500 mb-2">
             🔒 Silencium
           </h1>
         </div>
 
-        {/* Main headline */}
-        <h2 className="text-2xl font-semibold text-green-500 mb-8">
+        <h2 className="text-2xl font-semibold text-green-500 mb-6">
           {t('home.tagline')}
         </h2>
 
-        {/* Create Chat Room Button */}
-        <button
-          onClick={handleCreateRoom}
-          className="px-8 py-4 border-2 border-green-500 text-green-500 rounded-lg font-semibold hover:bg-green-500 hover:text-black transition-colors duration-300 mb-6"
-        >
-          {t('home.createRoom')}
-        </button>
-
-        {/* Join an existing room — the only path on a phone without an address bar */}
-        <form className="join-form" onSubmit={handleJoinRoom}>
-          <input
-            className="join-input"
-            type="text"
-            inputMode="url"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            value={joinValue}
-            onChange={(event) => {
-              setJoinValue(event.target.value);
-              setJoinErrorKey('');
+        <div className="home-mode-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'create'}
+            className={mode === 'create' ? 'active' : ''}
+            onClick={() => {
+              setMode('create');
+              setErrorKey('');
             }}
-            placeholder={t('home.joinPlaceholder')}
-            aria-label={t('home.joinAria')}
-          />
-          <button type="submit">{t('home.joinButton')}</button>
-        </form>
-        {joinErrorKey && <p className="server-error">⚠ {t(joinErrorKey)}</p>}
+          >
+            {t('home.createTab')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'join'}
+            className={mode === 'join' ? 'active' : ''}
+            onClick={() => {
+              setMode('join');
+              setErrorKey('');
+            }}
+          >
+            {t('home.joinTab')}
+          </button>
+        </div>
 
-        {/* Features List */}
+        {mode === 'create' ? (
+          <form className="room-key-form" onSubmit={handleCreateRoom}>
+            <label className="room-key-label" htmlFor="create-room-key">
+              {t('home.keyLabel')}
+            </label>
+            <p className="room-key-hint">{t('home.keyHint', { min: MIN_ROOM_KEY_LENGTH })}</p>
+            <div className="room-key-row">
+              <input
+                id="create-room-key"
+                className="join-input"
+                type="text"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                value={roomKey}
+                onChange={(event) => {
+                  setRoomKey(event.target.value);
+                  setErrorKey('');
+                }}
+                placeholder={t('home.keyPlaceholder')}
+                aria-label={t('home.keyLabel')}
+              />
+              <button type="button" onClick={handleGenerateKey}>
+                {t('home.generateKey')}
+              </button>
+            </div>
+            <button type="submit" className="room-key-submit">
+              {t('home.createRoom')}
+            </button>
+          </form>
+        ) : (
+          <form className="room-key-form" onSubmit={handleJoinRoom}>
+            <label className="room-key-label" htmlFor="join-room-id">
+              {t('home.roomIdLabel')}
+            </label>
+            <input
+              id="join-room-id"
+              className="join-input room-key-full"
+              type="text"
+              inputMode="url"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              value={roomIdInput}
+              onChange={(event) => {
+                setRoomIdInput(event.target.value);
+                setErrorKey('');
+              }}
+              placeholder={t('home.joinPlaceholder')}
+              aria-label={t('home.joinAria')}
+            />
+            <label className="room-key-label" htmlFor="join-room-key">
+              {t('home.keyLabel')}
+            </label>
+            <p className="room-key-hint">{t('home.keyHint', { min: MIN_ROOM_KEY_LENGTH })}</p>
+            <input
+              id="join-room-key"
+              className="join-input room-key-full"
+              type="text"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              value={roomKey}
+              onChange={(event) => {
+                setRoomKey(event.target.value);
+                setErrorKey('');
+              }}
+              placeholder={t('home.keyPlaceholder')}
+              aria-label={t('home.keyLabel')}
+            />
+            <button type="submit" className="room-key-submit">
+              {t('home.joinButton')}
+            </button>
+          </form>
+        )}
+
+        {errorKey && <p className="server-error">⚠ {t(errorKey)}</p>}
+
         <div className="home-features text-green-500 text-left max-w-md">
           {FEATURE_KEYS.map((key) => (
             <div className="home-feature" key={key}>
@@ -131,13 +237,21 @@ export default function CreateRoom() {
         </div>
       </main>
 
-      {/* Relay indicator + settings gear moved to the bottom of the screen.
-          Sticky, but it still occupies layout space, so it never covers the
-          Create/Join controls. */}
+      {/* Relay URL demoted: gear always available; URL shown only if expanded. */}
       <footer className="home-relaybar">
-        <span className="home-server" title={t('home.relayTitle')}>
-          {t('home.relayPrefix')}: {getSocketUrl()}
-        </span>
+        <button
+          type="button"
+          className="home-relay-toggle"
+          onClick={() => setShowAdvancedRelay((v) => !v)}
+          aria-expanded={showAdvancedRelay}
+        >
+          {showAdvancedRelay ? t('home.hideRelay') : t('home.showRelay')}
+        </button>
+        {showAdvancedRelay && (
+          <span className="home-server" title={t('home.relayTitle')}>
+            {t('home.relayPrefix')}: {getSocketUrl()}
+          </span>
+        )}
         <button
           type="button"
           className="home-gear"

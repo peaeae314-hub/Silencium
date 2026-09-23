@@ -5,6 +5,7 @@ const fs = require('fs');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const roomManager = require('./rooms/roomManager');
+const rateLimit = require('./lib/rateLimit');
 
 // Development logging helper
 const isDev = process.env.NODE_ENV !== 'production';
@@ -23,6 +24,10 @@ const server = http.createServer(app);
 //   and means a valid client payload is never silently dropped by the transport.
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_SOCKET_FRAME_BYTES = 5 * 1024 * 1024;
+// B11 — encrypted text frame cap (ciphertext + overhead well under this).
+const MAX_TEXT_BYTES = 64 * 1024;
+// libsodium crypto_auth_BYTES
+const AUTH_PROOF_BYTES = 32;
 
 const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
@@ -130,6 +135,23 @@ function reclaimPendingDisconnect(roomId, newSocketId, participantId) {
   return oldSocketId;
 }
 
+function byteLengthOf(value) {
+  if (value == null) return 0;
+  if (typeof value === 'string') return Buffer.byteLength(value);
+  return value.byteLength ?? value.length ?? 0;
+}
+
+/**
+ * Passphrase / room key must NEVER reach the relay. Reject join payloads that
+ * accidentally include them (server-side half of the weak-key / secret gate).
+ * Entropy itself is enforced on the client — the server never sees the secret.
+ */
+function rejectsSecretFields(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  const banned = ['passphrase', 'password', 'roomKey', 'secret'];
+  return banned.some((k) => Object.prototype.hasOwnProperty.call(payload, k));
+}
+
 app.use(cors());
 
 // Liveness probe — works in both dev and production.
@@ -171,13 +193,31 @@ if (isDev) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// ops/retained plaintext capture is OFF by default and is NOT wired into this
+// relay. Any tooling under ops/retained/ is an explicit ops-only opt-in outside
+// the normal server path — do not enable automatic plaintext retention here.
+// ---------------------------------------------------------------------------
+
 io.on('connection', (socket) => {
   devLog('🟢 New client connected:', socket.id);
 
   // 🏠 JOIN ROOM
-  socket.on('join-room', ({ roomId, participantId } = {}) => {
+  socket.on('join-room', (payload = {}) => {
+    if (rejectsSecretFields(payload)) {
+      socket.emit('join-error', 'Do not send the room key to the server');
+      return;
+    }
+
+    const { roomId, participantId } = payload;
     if (!roomId || typeof roomId !== 'string') {
       socket.emit('join-error', 'Invalid room ID');
+      return;
+    }
+
+    const limited = rateLimit.allowJoin(socket, roomId);
+    if (!limited.ok) {
+      socket.emit('join-error', 'Too many join attempts. Slow down and try again.');
       return;
     }
 
@@ -231,7 +271,7 @@ io.on('connection', (socket) => {
   });
 
   // 🔐 ENCRYPTED IMAGE MESSAGE HANDLER
-  socket.on('send-encrypted-image', (data) => {
+  socket.on('send-encrypted-image', (data = {}) => {
     const roomId = data.roomId || socket.data.roomId;
     if (!roomId || !data.encrypted || !data.nonce) {
       console.warn(`❌ Invalid encrypted image data from ${socket.id}`);
@@ -239,18 +279,24 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const limited = rateLimit.allowMessage(socket, roomId);
+    if (!limited.ok) {
+      socket.emit('image-error', 'Sending too fast. Slow down and try again.');
+      return;
+    }
+
     // Binary frames arrive as Buffer/Uint8Array/ArrayBuffer; tolerate the legacy
     // number-array form too. `.byteLength` covers binary, `.length` the array.
-    const byteLength = data.encrypted.byteLength ?? data.encrypted.length;
-    if (byteLength > MAX_IMAGE_BYTES) {
-      console.warn(`❌ Blocked oversized encrypted image from ${socket.id}: ${byteLength} bytes`);
+    const len = byteLengthOf(data.encrypted);
+    if (len > MAX_IMAGE_BYTES) {
+      console.warn(`❌ Blocked oversized encrypted image from ${socket.id}: ${len} bytes`);
       socket.emit('image-error', 'Image is too large to send. Please use a smaller image.');
       return;
     }
 
     try {
       devLog(`📤 Processing encrypted image from ${socket.id} in room ${roomId}`);
-      devLog(`📊 Image size: ${byteLength} bytes`);
+      devLog(`📊 Image size: ${len} bytes`);
 
       socket.to(roomId).emit('receive-encrypted-image', {
         encrypted: data.encrypted,
@@ -267,17 +313,73 @@ io.on('connection', (socket) => {
 
 
   // 🔐 PUBLIC KEY RELAY
-  socket.on('send-public-key', ({ roomId, publicKey }) => {
+  socket.on('send-public-key', ({ roomId, publicKey } = {}) => {
     if (!roomId || !publicKey) return;
+
+    const limited = rateLimit.allowHandshake(socket, roomId);
+    if (!limited.ok) {
+      socket.emit('rate-limit', { event: 'send-public-key' });
+      return;
+    }
+
+    const len = byteLengthOf(publicKey);
+    // X25519 public key is 32 bytes; tolerate number-array form.
+    if (len < 32 || len > 64) return;
+
     socket.to(roomId).emit('receive-public-key', {
       publicKey,
       theirSocketId: socket.id
     });
   });
 
+  // 🔏 AUTH PROOF RELAY (B8 — passphrase-authenticated handshake)
+  // Opaque MAC bytes only. The relay cannot forge these without the room key.
+  socket.on('send-auth-proof', ({ roomId, proof } = {}) => {
+    if (!roomId || !proof) return;
+
+    const limited = rateLimit.allowHandshake(socket, roomId);
+    if (!limited.ok) {
+      socket.emit('rate-limit', { event: 'send-auth-proof' });
+      return;
+    }
+
+    if (byteLengthOf(proof) !== AUTH_PROOF_BYTES) return;
+
+    socket.to(roomId).emit('receive-auth-proof', {
+      proof,
+      theirSocketId: socket.id
+    });
+  });
+
+  // 📡 WebRTC signaling relay (SDP/ICE only — no chat payloads)
+  socket.on('webrtc-signal', ({ roomId, signal } = {}) => {
+    const rid = roomId || socket.data.roomId;
+    if (!rid || !signal || typeof signal !== 'object') return;
+
+    const limited = rateLimit.allowHandshake(socket, rid);
+    if (!limited.ok) return;
+
+    socket.to(rid).emit('webrtc-signal', {
+      signal,
+      theirSocketId: socket.id
+    });
+  });
+
   // 🔐 MESSAGE RELAY
-  socket.on('send-message', ({ roomId, encrypted, nonce }) => {
+  socket.on('send-message', ({ roomId, encrypted, nonce } = {}) => {
     if (!roomId || !encrypted || !nonce) return;
+
+    const limited = rateLimit.allowMessage(socket, roomId);
+    if (!limited.ok) {
+      socket.emit('rate-limit', { event: 'send-message' });
+      return;
+    }
+
+    if (byteLengthOf(encrypted) > MAX_TEXT_BYTES) {
+      socket.emit('rate-limit', { event: 'send-message', reason: 'too-large' });
+      return;
+    }
+
     socket.to(roomId).emit('receive-message', { encrypted, nonce });
   });
 

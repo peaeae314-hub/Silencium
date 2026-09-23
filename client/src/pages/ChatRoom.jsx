@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
 import { App } from '@capacitor/app';
@@ -10,6 +10,14 @@ import {
   getMyKeyPair
 } from '../crypto/libs';
 import { CryptoWorker } from '../crypto/workerWrapper';
+import {
+  validateRoomKey,
+  loadRoomKey,
+  storeRoomKey,
+  clearRoomKey,
+  MIN_ROOM_KEY_LENGTH,
+} from '../crypto/roomKey';
+import { createPeerTransport } from '../webrtc/peerTransport';
 import CanvasImageRenderer from '../components/CanvasImageRenderer';
 import '../src/styles/hacker-theme.css';
 import useAutoScroll from '../src/hooks/useAutoScroll';
@@ -21,6 +29,7 @@ import { renderWithCode } from '../i18n/richText';
 // as binary frames, so these limits describe the actual bytes on the wire.
 const MAX_IMAGE_FILE_BYTES = 6 * 1024 * 1024;
 const MAX_ENCRYPTED_IMAGE_BYTES = 3 * 1024 * 1024;
+const MAX_TEXT_CHARS = 8000;
 
 // B14 — a stable, session-scoped id for "this participant". The relay uses it
 // to reclaim a held seat when the Android WebView drops the socket while the
@@ -62,6 +71,19 @@ export default function ChatRoom() {
   const receivedKey = useRef(null);
   const sharedKeyRef = useRef(null);
   const hasSharedKeyRef = useRef(false);
+  const verifiedRef = useRef(false);
+  const authKeyRef = useRef(null);
+  const theirPublicKeyRef = useRef(null);
+  const fingerprintRef = useRef('');
+  const pendingAuthProofRef = useRef(null);
+  const pendingVerifyRef = useRef(false);
+  const markVerifiedRef = useRef(() => {});
+  const completeVerifiedSessionRef = useRef(null);
+  const startWebRtcIfNeededRef = useRef(null);
+  const ingestCiphertextMessageRef = useRef(null);
+  const ingestCiphertextImageRef = useRef(null);
+  const peerTransportRef = useRef(null);
+  const roomKeyRef = useRef('');
   const [mySocketId, setMySocketId] = useState('');
   // `null` = reachable; `{ message }` = show the red banner (message may be '').
   const [connectionError, setConnectionError] = useState(null);
@@ -70,9 +92,13 @@ export default function ChatRoom() {
   const [input, setInput] = useState('');
   const [myPublicKey, setMyPublicKey] = useState(null);
   const [hasSharedKey, setHasSharedKey] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const [fingerprint, setFingerprint] = useState('');
+  const [authFailed, setAuthFailed] = useState(false);
+  const [transport, setTransport] = useState('socket'); // 'socket' | 'webrtc' | 'connecting'
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   // eslint-disable-next-line no-unused-vars
-  const [encryptionStatus, setEncryptionStatus] = useState('initializing'); // Used for debugging
+  const [encryptionStatus, setEncryptionStatus] = useState('initializing');
   const messagesEndRef = useRef(null);
 
   const location = useLocation();
@@ -82,108 +108,216 @@ export default function ChatRoom() {
   const fileInputRef = useRef(null);
   const imageHandlersRegistered = useRef(false);
 
-      useEffect(() => {
-        // Prevent multiple registrations
-        if (imageHandlersRegistered.current) return;
-        imageHandlersRegistered.current = true;
+  // Room key gate — passphrase stays in sessionStorage, never in the URL.
+  const [keyGateValue, setKeyGateValue] = useState('');
+  const [keyGateError, setKeyGateError] = useState('');
+  const [roomKeyReady, setRoomKeyReady] = useState(false);
 
-        const handleReceiveEncryptedImage = async ({ encrypted, nonce, name, type }) => {
-          if (!hasSharedKeyRef.current || !sharedKeyRef.current || !cryptoWorkerRef.current) return;
-          
-          try {
-            if (import.meta.env.DEV) {
-              console.log('Decrypting image:', { name, type, encryptedLength: encrypted.length });
-            }
-            
-            const decryptedBytes = await cryptoWorkerRef.current.decrypt(
-              new Uint8Array(encrypted),
-              new Uint8Array(nonce),
-              sharedKeyRef.current
-            );
-            
-            if (import.meta.env.DEV) {
-              console.log('Decrypted bytes length:', decryptedBytes.length);
-              console.log('Decrypted bytes type:', typeof decryptedBytes, decryptedBytes.constructor.name);
-              console.log('Decrypted bytes buffer:', decryptedBytes.buffer);
-            }
-            
-            // Handle the decrypted data - it might be a string or binary data
-            let imageData;
-            if (typeof decryptedBytes === 'string') {
-              // If it's already a string, use it directly
-              imageData = decryptedBytes;
-            } else if (decryptedBytes instanceof Uint8Array) {
-              imageData = new TextDecoder().decode(decryptedBytes);
-            } else if (decryptedBytes instanceof ArrayBuffer) {
-              imageData = new TextDecoder().decode(decryptedBytes);
-            } else {
-              // Convert to Uint8Array first
-              const uint8Array = new Uint8Array(decryptedBytes);
-              imageData = new TextDecoder().decode(uint8Array);
-            }
-            
-            if (import.meta.env.DEV) {
-              console.log('Reconstructed image data preview:', imageData.substring(0, 100) + '...');
-            }
-            
-            setMessages((prev) => {
-              // Check for duplicates based on image data hash or timestamp
-              const exists = prev.some(
-                (msg) => msg.image === imageData && msg.sender === "them" && msg.name === name
-              );
-              if (exists) return prev;
-              
-              return [...prev, {
-                id: crypto.randomUUID(),
-                image: imageData,
-                name,
-                type,
-                sender: "them",
-                timestamp: new Date().toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit'
-                })
-              }];
-            });
-          } catch (err) {
-            console.error('Failed to decrypt image:', err);
+  useEffect(() => {
+    if (!roomId) return;
+    const existing = loadRoomKey(roomId);
+    if (existing && validateRoomKey(existing).ok) {
+      roomKeyRef.current = existing.trim();
+      setRoomKeyReady(true);
+    } else {
+      setRoomKeyReady(false);
+    }
+  }, [roomId]);
+
+  const pushSystem = useCallback((text) => {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        text,
+        sender: 'system',
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      },
+    ]);
+  }, []);
+
+  const handleKeyGateSubmit = (event) => {
+    event.preventDefault();
+    const check = validateRoomKey(keyGateValue);
+    if (!check.ok) {
+      setKeyGateError(check.errorKey);
+      return;
+    }
+    storeRoomKey(roomId, check.key);
+    roomKeyRef.current = check.key;
+    setKeyGateError('');
+    setRoomKeyReady(true);
+  };
+
+  const ingestCiphertextMessage = useCallback(async ({ encrypted, nonce }) => {
+    if (!verifiedRef.current || !sharedKeyRef.current || !cryptoWorkerRef.current) return;
+    try {
+      const plain = await cryptoWorkerRef.current.decrypt(
+        new Uint8Array(encrypted),
+        new Uint8Array(nonce),
+        sharedKeyRef.current
+      );
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          text: plain,
+          sender: 'them',
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+        },
+      ]);
+    } catch (err) {
+      console.error('Failed to decrypt message:', err);
+      pushSystem(tRef.current('chat.decryptFailed'));
+    }
+  }, [pushSystem]);
+
+  const ingestCiphertextImage = useCallback(async ({ encrypted, nonce, name, type }) => {
+    if (!verifiedRef.current || !sharedKeyRef.current || !cryptoWorkerRef.current) return;
+    try {
+      const decryptedBytes = await cryptoWorkerRef.current.decrypt(
+        new Uint8Array(encrypted),
+        new Uint8Array(nonce),
+        sharedKeyRef.current
+      );
+
+      let imageData;
+      if (typeof decryptedBytes === 'string') {
+        imageData = decryptedBytes;
+      } else if (decryptedBytes instanceof Uint8Array) {
+        imageData = new TextDecoder().decode(decryptedBytes);
+      } else if (decryptedBytes instanceof ArrayBuffer) {
+        imageData = new TextDecoder().decode(decryptedBytes);
+      } else {
+        const uint8Array = new Uint8Array(decryptedBytes);
+        imageData = new TextDecoder().decode(uint8Array);
+      }
+
+      setMessages((prev) => {
+        const exists = prev.some(
+          (msg) => msg.image === imageData && msg.sender === 'them' && msg.name === name
+        );
+        if (exists) return prev;
+        return [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            image: imageData,
+            name,
+            type,
+            sender: 'them',
+            timestamp: new Date().toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          },
+        ];
+      });
+    } catch (err) {
+      console.error('Failed to decrypt image:', err);
+      pushSystem(tRef.current('chat.decryptFailed'));
+    }
+  }, [pushSystem]);
+
+  const sendCipherPayload = useCallback((kind, payload) => {
+    const peer = peerTransportRef.current;
+    if (peer?.isOpen()) {
+      const ok = peer.send({ kind, ...payload });
+      if (ok) return 'webrtc';
+    }
+    if (kind === 'message') {
+      socket.emit('send-message', { roomId, ...payload });
+    } else if (kind === 'image') {
+      socket.emit('send-encrypted-image', { roomId, ...payload });
+    }
+    return 'socket';
+  }, [roomId]);
+
+  const startWebRtcIfNeeded = useCallback(() => {
+    if (peerTransportRef.current || !verifiedRef.current || !socket.id) return;
+
+    const isInitiator = socket.id === [socket.id, receivedKey.current].sort()[1];
+    const transport = createPeerTransport({
+      isInitiator,
+      onSignal: (signal) => {
+        socket.emit('webrtc-signal', { roomId, signal });
+      },
+      onMessage: (frame) => {
+        if (!frame || typeof frame !== 'object') return;
+        if (frame.kind === 'message') {
+          ingestCiphertextMessage(frame);
+        } else if (frame.kind === 'image') {
+          ingestCiphertextImage(frame);
+        }
+      },
+      onState: (state) => {
+        if (state === 'connecting') setTransport('connecting');
+        else if (state === 'open') {
+          setTransport('webrtc');
+          pushSystem(tRef.current('chat.webrtcActive'));
+        } else if (state === 'failed' || state === 'closed') {
+          setTransport('socket');
+          if (state === 'failed') {
+            pushSystem(tRef.current('chat.webrtcFallback'));
           }
-        };
+          peerTransportRef.current?.close();
+          peerTransportRef.current = null;
+        }
+      },
+    });
+    peerTransportRef.current = transport;
+    transport.start().catch(() => {
+      setTransport('socket');
+      peerTransportRef.current = null;
+      pushSystem(tRef.current('chat.webrtcFallback'));
+    });
+  }, [roomId, ingestCiphertextMessage, ingestCiphertextImage, pushSystem]);
 
-        socket.on('receive-encrypted-image', handleReceiveEncryptedImage);
+  useEffect(() => {
+    // Prevent multiple registrations
+    if (imageHandlersRegistered.current) return;
+    imageHandlersRegistered.current = true;
 
-        const handleImageError = (message) => {
-          setIsUploadingImage(false);
-          alert(`❌ ${message || tRef.current('chat.alertImageSendFailed')}`);
-        };
+    const handleReceiveEncryptedImage = (payload) => {
+      ingestCiphertextImage(payload);
+    };
 
-        socket.on('image-error', handleImageError);
+    socket.on('receive-encrypted-image', handleReceiveEncryptedImage);
 
-        return () => {
-          socket.off('receive-encrypted-image', handleReceiveEncryptedImage);
-          socket.off('image-error', handleImageError);
-          imageHandlersRegistered.current = false;
-        };
-      }, []);
+    const handleImageError = (message) => {
+      setIsUploadingImage(false);
+      alert(`❌ ${message || tRef.current('chat.alertImageSendFailed')}`);
+    };
 
+    socket.on('image-error', handleImageError);
+
+    return () => {
+      socket.off('receive-encrypted-image', handleReceiveEncryptedImage);
+      socket.off('image-error', handleImageError);
+      imageHandlersRegistered.current = false;
+    };
+  }, [ingestCiphertextImage]);
 
   const handleImageUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    // Check if encryption is ready
-    if (!hasSharedKeyRef.current || !cryptoWorkerRef.current) {
+    if (!verifiedRef.current || !cryptoWorkerRef.current) {
       alert(t('chat.alertWaitEncryption'));
       return;
     }
 
-    // Check if socket is connected
     if (!socket.connected) {
       alert(t('chat.alertConnectionLost'));
       return;
     }
 
-    // Check if already uploading
     if (isUploadingImage) {
       alert(t('chat.alertUploadInProgress'));
       return;
@@ -200,58 +334,35 @@ export default function ChatRoom() {
     const reader = new FileReader();
     reader.onload = async () => {
       const imageData = reader.result;
-      
-      if (import.meta.env.DEV) {
-      console.log('Original image data preview:', imageData.substring(0, 100) + '...');
-    }
-      
+
       try {
-        // Always compress images for better stability
         let processedImageData = await compressImage(imageData, file.type);
-        if (import.meta.env.DEV) {
-          console.log('Image compressed to reduce size');
-        }
-
-        // Use a simpler approach - encrypt the base64 string directly
         const imageBytes = new TextEncoder().encode(processedImageData);
-        
-        if (import.meta.env.DEV) {
-          console.log('Image bytes length for encryption:', imageBytes.length);
-        }
 
-        // Limit the encrypted payload to what the relay will accept.
         if (imageBytes.length > MAX_ENCRYPTED_IMAGE_BYTES) {
           alert(t('chat.alertImageTooLarge'));
           setIsUploadingImage(false);
           return;
         }
 
-        // Add timeout for encryption
         const encryptionPromise = cryptoWorkerRef.current.encrypt(
           imageBytes,
           sharedKeyRef.current
         );
 
-        const timeoutPromise = new Promise((_, reject) => 
+        const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Encryption timeout')), 30000)
         );
 
         const { ciphertext, nonce } = await Promise.race([encryptionPromise, timeoutPromise]);
 
-        if (import.meta.env.DEV) {
-          console.log('Encrypted data length:', ciphertext.length);
-        }
-
-        // Send encrypted image as binary frames (no Array.from JSON inflation).
-        socket.emit('send-encrypted-image', {
-          roomId,
+        sendCipherPayload('image', {
           encrypted: ciphertext,
           nonce,
           name: file.name,
           type: file.type,
         });
 
-        // Add to local messages
         setMessages((prev) => [
           ...prev,
           {
@@ -262,9 +373,9 @@ export default function ChatRoom() {
             sender: socket.id,
             timestamp: new Date().toLocaleTimeString([], {
               hour: '2-digit',
-              minute: '2-digit'
-            })
-          }
+              minute: '2-digit',
+            }),
+          },
         ]);
       } catch (err) {
         console.error('Failed to encrypt image:', err);
@@ -276,38 +387,29 @@ export default function ChatRoom() {
     reader.readAsDataURL(file);
   };
 
-  // Improved image compression function
   const compressImage = (imageData, type) => {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
-        
-        // More aggressive size reduction (max 1280x720)
+
         let { width, height } = img;
         const maxWidth = 1280;
         const maxHeight = 720;
-        
+
         if (width > maxWidth || height > maxHeight) {
           const ratio = Math.min(maxWidth / width, maxHeight / height);
           width *= ratio;
           height *= ratio;
         }
-        
+
         canvas.width = width;
         canvas.height = height;
-        
-        // Draw and compress
         ctx.drawImage(img, 0, 0, width, height);
-        
-        // More aggressive compression
+
         const quality = type === 'image/jpeg' ? 0.6 : 0.7;
         const compressedData = canvas.toDataURL(type, quality);
-        
-        if (import.meta.env.DEV) {
-          console.log(`Compressed image from ${img.width}x${img.height} to ${width}x${height}`);
-        }
         resolve(compressedData);
       };
       img.src = imageData;
@@ -316,7 +418,6 @@ export default function ChatRoom() {
 
   useAutoScroll(messagesEndRef, messages);
 
-  // Surface an unreachable relay instead of sitting on "Establishing Encryption…".
   useEffect(() => {
     const handleConnectError = (err) => {
       setConnectionError({ message: err?.message || '' });
@@ -340,16 +441,14 @@ export default function ChatRoom() {
     });
     return () => {
       cryptoWorkerRef.current?.terminate();
+      peerTransportRef.current?.close();
+      peerTransportRef.current = null;
     };
   }, []);
 
-  // B14 — recover the room when the app returns to the foreground. An Android
-  // WebView drops the Socket.IO transport while backgrounded; the relay holds
-  // our seat for the 60 s grace window, so re-connect, re-join the same room,
-  // and re-emit our public key on resume. `visibilitychange` covers the web and
-  // older shells, `appStateChange` the native Capacitor shell.
+  // B14 — recover the room when the app returns to the foreground.
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId || !roomKeyReady) return;
 
     const resume = () => {
       if (!socket.connected) socket.connect();
@@ -386,9 +485,8 @@ export default function ChatRoom() {
       document.removeEventListener('visibilitychange', handleVisibility);
       appStateListener?.remove?.();
     };
-  }, [roomId]);
+  }, [roomId, roomKeyReady]);
 
-  // Reset image handlers when room changes
   useEffect(() => {
     return () => {
       imageHandlersRegistered.current = false;
@@ -396,13 +494,15 @@ export default function ChatRoom() {
   }, [roomId]);
 
   useEffect(() => {
+    if (!roomKeyReady) return undefined;
+
     const handleConnect = () => {
       setMySocketId(socket.id);
-      socket.emit("join-room", { roomId, participantId: participantIdRef.current });
-      setEncryptionStatus("socket-connected");
+      socket.emit('join-room', { roomId, participantId: participantIdRef.current });
+      setEncryptionStatus('socket-connected');
 
       if (myPublicKey) {
-        socket.emit("send-public-key", {
+        socket.emit('send-public-key', {
           roomId,
           publicKey: Array.from(myPublicKey),
         });
@@ -410,7 +510,7 @@ export default function ChatRoom() {
 
       setTimeout(() => {
         if (!hasSharedKeyRef.current && myPublicKey) {
-          socket.emit("send-public-key", {
+          socket.emit('send-public-key', {
             roomId,
             publicKey: Array.from(myPublicKey),
           });
@@ -419,20 +519,9 @@ export default function ChatRoom() {
     };
 
     const handleDisconnect = (reason) => {
-      if (import.meta.env.DEV) {
-        console.log('Socket disconnected:', reason);
-      }
       if (reason === 'io server disconnect') {
-        // Server disconnected us, try to reconnect
-        if (import.meta.env.DEV) {
-          console.log('Attempting to reconnect...');
-        }
         socket.connect();
       } else if (reason === 'transport close' || reason === 'ping timeout') {
-        // Network issues, try to reconnect
-        if (import.meta.env.DEV) {
-          console.log('Network issue detected, attempting to reconnect...');
-        }
         setTimeout(() => {
           if (!socket.connected) {
             socket.connect();
@@ -445,158 +534,267 @@ export default function ChatRoom() {
       console.error('Socket error:', error);
     };
 
-    const handleReconnect = (attemptNumber) => {
-      if (import.meta.env.DEV) {
-        console.log('Socket reconnected on attempt:', attemptNumber);
-      }
-      // Re-join the room after reconnection
+    const handleReconnect = () => {
       if (roomId) {
-        socket.emit("join-room", { roomId, participantId: participantIdRef.current });
+        socket.emit('join-room', { roomId, participantId: participantIdRef.current });
       }
     };
 
-    socket.on("connect", handleConnect);
-    socket.on("disconnect", handleDisconnect);
-    socket.on("error", handleError);
-    socket.on("reconnect", handleReconnect);
-    
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('error', handleError);
+    socket.on('reconnect', handleReconnect);
+
     return () => {
-      socket.off("connect", handleConnect);
-      socket.off("disconnect", handleDisconnect);
-      socket.off("error", handleError);
-      socket.off("reconnect", handleReconnect);
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('error', handleError);
+      socket.off('reconnect', handleReconnect);
     };
-  }, [myPublicKey, roomId]);
+  }, [myPublicKey, roomId, roomKeyReady]);
 
   const sendMessage = async () => {
     if (!input.trim()) return;
-    if (!hasSharedKeyRef.current || !cryptoWorkerRef.current) return;
+    if (!verifiedRef.current || !cryptoWorkerRef.current) return;
+    if (input.length > MAX_TEXT_CHARS) {
+      alert(t('chat.alertTextTooLong'));
+      return;
+    }
 
     const { ciphertext, nonce } = await cryptoWorkerRef.current.encrypt(
       new TextEncoder().encode(input),
       sharedKeyRef.current
     );
-    // Binary frames, matching the image path (B6) — no number-array inflation.
-    socket.emit("send-message", {
-      roomId,
+    sendCipherPayload('message', {
       encrypted: ciphertext,
-      nonce
+      nonce,
     });
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setMessages(prev => [...prev, { id: crypto.randomUUID(), text: input, sender: socket.id, timestamp: time }]);
+    setMessages((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), text: input, sender: socket.id, timestamp: time },
+    ]);
     setInput('');
   };
 
-  const handleKeyExchange = async (theirPublicKey, isClient) => {
-    const myKeyPair = await getMyKeyPair();
-    const sharedKey = await cryptoWorkerRef.current.deriveSharedKey(
-      myKeyPair.publicKey,
-      myKeyPair.privateKey,
-      theirPublicKey,
-      isClient
+  const completeVerifiedSession = useCallback(
+    async (theirPublicKey, isClient) => {
+      const worker = cryptoWorkerRef.current;
+      const myKeyPair = await getMyKeyPair();
+      if (!worker || !myKeyPair || !roomKeyRef.current) return;
+
+      const authKey = await worker.deriveAuthKey(roomKeyRef.current, roomId);
+      authKeyRef.current = authKey;
+
+      const kxKey = await worker.deriveSharedKey(
+        myKeyPair.publicKey,
+        myKeyPair.privateKey,
+        theirPublicKey,
+        isClient
+      );
+      const boundKey = await worker.bindSessionKey(kxKey, authKey);
+      sharedKeyRef.current = boundKey;
+      hasSharedKeyRef.current = true;
+      setHasSharedKey(true);
+
+      const fp = await worker.computeFingerprint(
+        authKey,
+        roomId,
+        myKeyPair.publicKey,
+        theirPublicKey
+      );
+      fingerprintRef.current = fp;
+      setFingerprint(fp);
+
+      const proof = await worker.computeAuthProof(
+        authKey,
+        roomId,
+        myKeyPair.publicKey,
+        theirPublicKey
+      );
+      socket.emit('send-auth-proof', {
+        roomId,
+        proof: Array.from(proof),
+      });
+
+      // Peer may have sent their proof before we finished deriving — verify now.
+      if (pendingAuthProofRef.current) {
+        const queued = pendingAuthProofRef.current;
+        pendingAuthProofRef.current = null;
+        const ok = await worker.verifyAuthProof(
+          authKey,
+          new Uint8Array(queued),
+          roomId,
+          myKeyPair.publicKey,
+          theirPublicKey
+        );
+        if (!ok) {
+          setAuthFailed(true);
+          verifiedRef.current = false;
+          setVerified(false);
+          sharedKeyRef.current = null;
+          hasSharedKeyRef.current = false;
+          setHasSharedKey(false);
+          pushSystem(tRef.current('chat.authFailed'));
+        } else {
+          // markVerified is defined below; call via verified path after render.
+          // Use a microtask so the callback identity is available.
+          pendingVerifyRef.current = true;
+        }
+      }
+    },
+    [roomId, pushSystem]
+  );
+
+  const markVerified = useCallback(() => {
+    if (verifiedRef.current) return;
+    verifiedRef.current = true;
+    setVerified(true);
+    setEncryptionStatus('ready');
+    pushSystem(tRef.current('chat.encryptionNowActive'));
+    pushSystem(
+      tRef.current('chat.fingerprintReady', {
+        code: fingerprintRef.current || '…',
+      })
     );
-    sharedKeyRef.current = sharedKey;
-    hasSharedKeyRef.current = true;
-    setHasSharedKey(true);
-  };
+    startWebRtcIfNeeded();
+  }, [pushSystem, startWebRtcIfNeeded]);
 
   useEffect(() => {
-    if (!roomId || joinedRef.current) return;
+    markVerifiedRef.current = markVerified;
+  }, [markVerified]);
+
+  useEffect(() => {
+    if (pendingVerifyRef.current) {
+      pendingVerifyRef.current = false;
+      markVerified();
+    }
+  }, [markVerified, hasSharedKey, fingerprint]);
+
+  // When fingerprint arrives after verify race, update the system line — the
+  // banner below always shows the live fingerprint value.
+
+
+  useEffect(() => {
+    completeVerifiedSessionRef.current = completeVerifiedSession;
+  }, [completeVerifiedSession]);
+
+  useEffect(() => {
+    startWebRtcIfNeededRef.current = startWebRtcIfNeeded;
+  }, [startWebRtcIfNeeded]);
+
+  useEffect(() => {
+    ingestCiphertextMessageRef.current = ingestCiphertextMessage;
+  }, [ingestCiphertextMessage]);
+
+  useEffect(() => {
+    ingestCiphertextImageRef.current = ingestCiphertextImage;
+  }, [ingestCiphertextImage]);
+
+  useEffect(() => {
+    if (!roomId || !roomKeyReady || joinedRef.current) return undefined;
     joinedRef.current = true;
 
     const setup = async () => {
       if (!socket.connected) socket.connect();
 
-      // The socket may already be connected (e.g. the room screen was opened
-      // after the home screen dialled the relay), in which case no `connect`
-      // event fires and the join would otherwise be skipped. Re-joining is
-      // idempotent server-side, and it lets the relay reclaim a B14 seat.
       if (socket.connected) {
-        socket.emit("join-room", { roomId, participantId: participantIdRef.current });
+        socket.emit('join-room', { roomId, participantId: participantIdRef.current });
       }
 
-      socket.on("room-destroyed", ({ message }) => {
-        setMessages(prev => [
+      socket.on('room-destroyed', ({ message }) => {
+        setMessages((prev) => [
           ...prev,
           {
             id: crypto.randomUUID(),
             text: `⚠️ ${message}`,
-            sender: "system",
+            sender: 'system',
             timestamp: new Date().toLocaleTimeString([], {
               hour: '2-digit',
-              minute: '2-digit'
-            })
-          }
+              minute: '2-digit',
+            }),
+          },
         ]);
-        
-        // Show notification and redirect after a short delay
+
         setTimeout(() => {
           alert(message);
+          clearRoomKey(roomId);
           socket.disconnect();
-          navigate("/");
+          navigate('/');
         }, 1000);
       });
 
-      socket.on("receive-public-key", async ({ publicKey, theirSocketId }) => {
-        if (receivedKey.current === theirSocketId) return;
+      socket.on('receive-public-key', async ({ publicKey, theirSocketId }) => {
+        if (receivedKey.current === theirSocketId && theirPublicKeyRef.current) return;
         receivedKey.current = theirSocketId;
 
         const isClient = socket.id === [socket.id, theirSocketId].sort()[1];
 
         try {
           const decodedKey = new Uint8Array(publicKey);
-          await handleKeyExchange(decodedKey, isClient);
-          setEncryptionStatus("ready");
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              text: tRef.current('chat.encryptionNowActive'),
-              sender: "system",
-              timestamp: new Date().toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit'
-                })
-            },
-          ]);
+          theirPublicKeyRef.current = decodedKey;
+          await completeVerifiedSessionRef.current(decodedKey, isClient);
         } catch (err) {
-          console.error("❌ Key derivation failed:", err);
+          console.error('❌ Key derivation failed:', err);
+          setAuthFailed(true);
+          pushSystem(tRef.current('chat.authFailed'));
         }
 
-        if (myPublicKey) {
-          socket.emit("send-public-key", {
+        if (myPublicKeyRef.current) {
+          socket.emit('send-public-key', {
             roomId,
-            publicKey: Array.from(myPublicKey),
+            publicKey: Array.from(myPublicKeyRef.current),
           });
         }
       });
 
-      socket.on("receive-message", async ({ encrypted, nonce }) => {
-        if (!hasSharedKeyRef.current || !sharedKeyRef.current || !cryptoWorkerRef.current) return;
-        const plain = await cryptoWorkerRef.current.decrypt(
-          new Uint8Array(encrypted),
-          new Uint8Array(nonce),
-          sharedKeyRef.current
-        );
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            text: plain,
-            sender: "them",
-            timestamp: new Date().toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit'
-              })
-
-          },
-        ]);
+      socket.on('receive-auth-proof', async ({ proof }) => {
+        if (!authKeyRef.current || !theirPublicKeyRef.current || !myPublicKeyRef.current) {
+          pendingAuthProofRef.current = proof;
+          return;
+        }
+        try {
+          const ok = await cryptoWorkerRef.current.verifyAuthProof(
+            authKeyRef.current,
+            new Uint8Array(proof),
+            roomId,
+            myPublicKeyRef.current,
+            theirPublicKeyRef.current
+          );
+          if (!ok) {
+            setAuthFailed(true);
+            verifiedRef.current = false;
+            setVerified(false);
+            sharedKeyRef.current = null;
+            hasSharedKeyRef.current = false;
+            setHasSharedKey(false);
+            pushSystem(tRef.current('chat.authFailed'));
+            return;
+          }
+          markVerifiedRef.current();
+        } catch (err) {
+          console.error('Auth proof verify failed:', err);
+          setAuthFailed(true);
+          pushSystem(tRef.current('chat.authFailed'));
+        }
       });
 
-      socket.on("system-message", (msg) => {
+      socket.on('receive-message', (payload) => {
+        ingestCiphertextMessageRef.current?.(payload);
+      });
+
+      socket.on('webrtc-signal', async ({ signal }) => {
+        if (!peerTransportRef.current) {
+          // Peer started first — spin up our side as non-initiator if needed.
+          if (verifiedRef.current) startWebRtcIfNeededRef.current?.();
+        }
+        await peerTransportRef.current?.handleSignal(signal);
+      });
+
+      socket.on('system-message', (msg) => {
         setMessages((prev) => {
           const alreadyExists = prev.some(
-            (m) => m.text === msg && m.sender === "system"
+            (m) => m.text === msg && m.sender === 'system'
           );
           if (alreadyExists) return prev;
           return [
@@ -604,40 +802,53 @@ export default function ChatRoom() {
             {
               id: crypto.randomUUID(),
               text: msg,
-              sender: "system",
+              sender: 'system',
               timestamp: new Date().toLocaleTimeString([], {
                 hour: '2-digit',
-                minute: '2-digit'
-              })
-
+                minute: '2-digit',
+              }),
             },
           ];
         });
       });
 
-      socket.on("join-error", (msg) => {
+      socket.on('join-error', (msg) => {
         alert(`❌ ${msg}`);
-        navigate("/");
+        navigate('/');
       });
     };
 
     setup();
 
     return () => {
-      socket.off("receive-message");
-      socket.off("receive-public-key");
-      socket.off("system-message");
-      socket.off("join-error");
-      socket.off("room-destroyed");
+      socket.off('receive-message');
+      socket.off('receive-public-key');
+      socket.off('receive-auth-proof');
+      socket.off('webrtc-signal');
+      socket.off('system-message');
+      socket.off('join-error');
+      socket.off('room-destroyed');
+
+      peerTransportRef.current?.close();
+      peerTransportRef.current = null;
 
       if (socket.connected) socket.disconnect();
       joinedRef.current = false;
     };
-  }, [roomId, navigate, myPublicKey]);
+  }, [roomId, navigate, roomKeyReady, pushSystem]);
+
+  // Re-run markVerified fingerprint line once fingerprint state is set.
+  useEffect(() => {
+    if (verified && fingerprint) {
+      // no-op: banner shows fingerprint; keep effect for future hooks
+    }
+  }, [verified, fingerprint]);
 
   const handleLeaveRoom = () => {
     setMessages([]);
-    // Emit a leave event before disconnecting
+    clearRoomKey(roomId);
+    peerTransportRef.current?.close();
+    peerTransportRef.current = null;
     socket.emit('leave-room', { roomId });
     socket.disconnect();
     navigate('/');
@@ -645,6 +856,7 @@ export default function ChatRoom() {
 
   // On native, window.location.origin is the WebView's `https://localhost`, so
   // invite links must use the configured relay origin instead.
+  // Invite encodes room id only — the secret is shared out-of-band.
   const shareUrl = `${getShareOrigin()}/chat?room=${roomId}`;
 
   const handleCopyLink = async () => {
@@ -652,10 +864,67 @@ export default function ChatRoom() {
       await navigator.clipboard.writeText(shareUrl);
       setConnectionError(null);
     } catch {
-      // Clipboard API can be unavailable in a WebView without focus/permission.
       window.prompt(t('chat.copyInvitePrompt'), shareUrl);
     }
   };
+
+  if (!roomId) {
+    return (
+      <div className="settings-screen">
+        <div className="settings-card">
+          <h1 className="settings-title">🔒 Silencium</h1>
+          <p className="settings-copy">{t('home.joinError')}</p>
+          <button type="button" onClick={() => navigate('/')}>
+            {t('chat.leave')}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!roomKeyReady) {
+    return (
+      <div className="settings-screen">
+        <div className="settings-card">
+          <h1 className="settings-title">🔒 Silencium</h1>
+          <p className="settings-copy">{t('chat.keyGateCopy')}</p>
+          <form className="room-key-form" onSubmit={handleKeyGateSubmit}>
+            <label className="room-key-label" htmlFor="gate-room-key">
+              {t('home.keyLabel')}
+            </label>
+            <p className="room-key-hint">
+              {t('home.keyHint', { min: MIN_ROOM_KEY_LENGTH })}
+            </p>
+            <input
+              id="gate-room-key"
+              className="join-input room-key-full"
+              type="text"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              value={keyGateValue}
+              onChange={(event) => {
+                setKeyGateValue(event.target.value);
+                setKeyGateError('');
+              }}
+              placeholder={t('home.keyPlaceholder')}
+            />
+            {keyGateError && (
+              <p className="server-error">⚠ {t(keyGateError)}</p>
+            )}
+            <button type="submit" className="room-key-submit">
+              {t('chat.keyGateContinue')}
+            </button>
+            <button type="button" onClick={() => navigate('/')}>
+              {t('chat.leave')}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  const canChat = verified && !authFailed;
 
   return (
     <div className="chat-outer">
@@ -682,6 +951,7 @@ export default function ChatRoom() {
           <div className="chat-link-value" title={shareUrl}>
             {shareUrl}
           </div>
+          <p className="chat-share-hint">{t('chat.shareKeyHint')}</p>
         </div>
 
         {connectionError && (
@@ -699,16 +969,42 @@ export default function ChatRoom() {
           </div>
         )}
 
-        <div className="encryption-status" style={{ 
-          textAlign: 'center', 
-          padding: '8px',
-          margin: '8px 0',
-          borderRadius: '4px',
-          backgroundColor: hasSharedKey ? '#1a4d1a' : '#4d1a1a',
-          color: '#00ff00',
-          fontSize: '12px'
-        }}>
-          {hasSharedKey ? t('chat.encryptionActive') : t('chat.encryptionEstablishing')}
+        <div
+          className="encryption-status"
+          style={{
+            textAlign: 'center',
+            padding: '8px',
+            margin: '8px 0',
+            borderRadius: '4px',
+            backgroundColor: authFailed
+              ? '#4d1a1a'
+              : canChat
+                ? '#1a4d1a'
+                : '#4d3a1a',
+            color: '#00ff00',
+            fontSize: '12px',
+          }}
+        >
+          {authFailed
+            ? t('chat.authFailedBanner')
+            : canChat
+              ? t('chat.encryptionActive')
+              : hasSharedKey
+                ? t('chat.authVerifying')
+                : t('chat.encryptionEstablishing')}
+          {fingerprint && (
+            <div className="fingerprint-code">
+              {t('chat.fingerprintLabel')}: <strong>{fingerprint}</strong>
+            </div>
+          )}
+          <div className="transport-label">
+            {t('chat.transportLabel')}:{' '}
+            {transport === 'webrtc'
+              ? t('chat.transportWebrtc')
+              : transport === 'connecting'
+                ? t('chat.transportConnecting')
+                : t('chat.transportSocket')}
+          </div>
         </div>
 
         <div className="chat-messages">
@@ -719,20 +1015,24 @@ export default function ChatRoom() {
                 msg.sender === mySocketId
                   ? 'align-right'
                   : msg.sender && msg.sender !== 'system'
-                  ? 'align-left'
-                  : 'align-center'
+                    ? 'align-left'
+                    : 'align-center'
               }`}
             >
-              <div className={`message-bubble ${msg.sender === 'system' ? 'system-msg' : 'user-msg'}`}>
+              <div
+                className={`message-bubble ${
+                  msg.sender === 'system' ? 'system-msg' : 'user-msg'
+                }`}
+              >
                 {msg.type?.startsWith('image') ? (
-                        <CanvasImageRenderer imageData={msg.image} imageName={msg.name} />
-                      ) : (
-                        <div>{msg.text ?? t('chat.noText')}</div>
-                      )}
+                  <CanvasImageRenderer imageData={msg.image} imageName={msg.name} />
+                ) : (
+                  <div>{msg.text ?? t('chat.noText')}</div>
+                )}
 
-                      {msg.timestamp && (msg.text || msg.image) && (
-                        <div className="timestamp">{msg.timestamp}</div>
-                      )}
+                {msg.timestamp && (msg.text || msg.image) && (
+                  <div className="timestamp">{msg.timestamp}</div>
+                )}
               </div>
             </div>
           ))}
@@ -754,16 +1054,22 @@ export default function ChatRoom() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
             placeholder={t('chat.typeMessage')}
-            disabled={!hasSharedKey}
+            disabled={!canChat}
           />
-          <button 
-            onClick={() => fileInputRef.current.click()} 
-            disabled={!hasSharedKey || isUploadingImage}
-            title={!hasSharedKey ? t('chat.waitForEncryption') : isUploadingImage ? t('chat.uploadingImage') : t('chat.attachImage')}
+          <button
+            onClick={() => fileInputRef.current.click()}
+            disabled={!canChat || isUploadingImage}
+            title={
+              !canChat
+                ? t('chat.waitForEncryption')
+                : isUploadingImage
+                  ? t('chat.uploadingImage')
+                  : t('chat.attachImage')
+            }
           >
             {isUploadingImage ? '⏳' : '📎'}
           </button>
-          <button onClick={sendMessage} disabled={!hasSharedKey}>
+          <button onClick={sendMessage} disabled={!canChat}>
             {t('chat.send')}
           </button>
         </div>

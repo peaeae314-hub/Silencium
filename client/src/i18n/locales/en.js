@@ -27,6 +27,20 @@ export default {
   'home.serverSettings': 'Server settings',
   'home.languageLabel': 'Language',
 
+  'home.createTab': 'Create',
+  'home.joinTab': 'Join',
+  'home.roomIdLabel': 'Room id or invite link',
+  'home.keyLabel': 'Shared room key',
+  'home.keyPlaceholder': 'Passphrase (≥12 chars) or generate',
+  'home.keyHint':
+    'Minimum {min} characters. Generated keys use 128 bits of randomness. Never sent to the server — share out-of-band with your contact.',
+  'home.keyRequired': 'Enter a shared room key.',
+  'home.keyTooWeak': 'Room key is too weak — use at least 12 characters, or Generate.',
+  'home.generateKey': 'Generate',
+  'home.feature.roomKey': 'Passphrase-authenticated key exchange',
+  'home.showRelay': 'Show relay',
+  'home.hideRelay': 'Hide relay',
+
   // --- Settings / relay URL form ---------------------------------------
   'settings.title': '⚙️ Server Settings',
   'settings.copy':
@@ -86,6 +100,26 @@ export default {
     'Image too large after compression. Please use a smaller image.',
   'chat.alertEncryptFailed': 'Failed to encrypt image. Please try again.',
   'chat.alertImageSendFailed': 'Image could not be sent. Please try again.',
+
+  'chat.keyGateCopy':
+    'This invite has a room id but needs the shared room key (shared out-of-band).',
+  'chat.keyGateContinue': 'Enter room',
+  'chat.shareKeyHint':
+    'Share the room key separately (not in the link). Both of you must use the same key.',
+  'chat.authVerifying': '⏳ Verifying shared room key…',
+  'chat.authFailed':
+    '⚠️ Room key verification failed. Wrong key, or the relay tried to MITM — chat blocked.',
+  'chat.authFailedBanner': '❌ Verification failed — leave and retry with the correct key',
+  'chat.fingerprintLabel': 'Verification code',
+  'chat.fingerprintReady': '🔏 Verification code: {code} (compare with your contact)',
+  'chat.decryptFailed': '⚠️ Could not decrypt a message (tampered or wrong key).',
+  'chat.alertTextTooLong': 'Message is too long.',
+  'chat.webrtcActive': '📡 Direct peer channel connected (WebRTC)',
+  'chat.webrtcFallback': '📡 Direct channel unavailable — using encrypted relay',
+  'chat.transportLabel': 'Transport',
+  'chat.transportWebrtc': 'WebRTC',
+  'chat.transportConnecting': 'WebRTC…',
+  'chat.transportSocket': 'Encrypted relay',
 
   // --- In-app update ----------------------------------------------------
   'update.sectionTitle': 'App updates',

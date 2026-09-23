@@ -11,3 +11,9 @@ client/android/local.properties
 client/android/capacitor-cordova-android-plugins/build/
 client/android/.idea/
 *.iml
+
+# Ops runtime artifacts (keep README only)
+ops/tunnel*.log
+ops/tunnel-status.txt
+ops/retained/*/
+!ops/retained/README.md
