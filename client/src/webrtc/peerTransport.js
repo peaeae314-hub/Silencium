@@ -1,16 +1,15 @@
 /**
  * WebRTC DataChannel transport for ciphertext (plan ③).
  * Socket.IO remains the signaling + membership path and the automatic fallback
- * when ICE/NAT fails. Public STUN only — no TURN hard dependency.
+ * when ICE/NAT fails. Prefers P2P via STUN; uses TURN when configured (default
+ * demo TURN or user override). TURN operators see metadata only — payloads stay
+ * E2EE. Encrypted Socket.IO relay remains the fallback.
  */
-
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-];
+import { defaultIceServers, iceServersHaveTurn } from './iceServers';
 
 const DC_LABEL = 'silencium';
-const CONNECT_TIMEOUT_MS = 10_000;
+const CONNECT_TIMEOUT_STUN_MS = 10_000;
+const CONNECT_TIMEOUT_TURN_MS = 18_000;
 
 /**
  * @param {object} opts
@@ -18,8 +17,9 @@ const CONNECT_TIMEOUT_MS = 10_000;
  * @param {(signal: object) => void} opts.onSignal - send SDP/ICE via Socket.IO
  * @param {(payload: object) => void} opts.onMessage - decrypted-ready ciphertext frame
  * @param {(state: 'connecting'|'open'|'closed'|'failed') => void} [opts.onState]
+ * @param {RTCIceServer[]} [opts.iceServers] - from resolveIceServers(); defaults to demo list
  */
-export function createPeerTransport({ isInitiator, onSignal, onMessage, onState }) {
+export function createPeerTransport({ isInitiator, onSignal, onMessage, onState, iceServers }) {
   let pc = null;
   let dc = null;
   let closed = false;
@@ -27,6 +27,11 @@ export function createPeerTransport({ isInitiator, onSignal, onMessage, onState 
   const pendingIce = [];
   let started = false;
   const pendingSignals = [];
+  const servers =
+    Array.isArray(iceServers) && iceServers.length > 0 ? iceServers : defaultIceServers();
+  const connectTimeoutMs = iceServersHaveTurn(servers)
+    ? CONNECT_TIMEOUT_TURN_MS
+    : CONNECT_TIMEOUT_STUN_MS;
 
   const setState = (state) => {
     try {
@@ -93,7 +98,7 @@ export function createPeerTransport({ isInitiator, onSignal, onMessage, onState 
 
   const start = async () => {
     setState('connecting');
-    pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    pc = new RTCPeerConnection({ iceServers: servers });
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -122,7 +127,7 @@ export function createPeerTransport({ isInitiator, onSignal, onMessage, onState 
 
     connectTimer = setTimeout(() => {
       if (dc?.readyState !== 'open') fail();
-    }, CONNECT_TIMEOUT_MS);
+    }, connectTimeoutMs);
 
     started = true;
     const queued = pendingSignals.splice(0);

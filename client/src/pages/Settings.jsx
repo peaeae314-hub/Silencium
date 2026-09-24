@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ServerUrlForm from '../components/ServerUrlForm';
+import IceConfigForm from '../components/IceConfigForm';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import { applyServerUrl } from '../utils/socket';
 import { useI18n } from '../i18n/context';
@@ -46,6 +47,8 @@ export default function Settings() {
         <h1 className="settings-title">{t('settings.title')}</h1>
         <p className="settings-copy">{t('settings.copy')}</p>
         <ServerUrlForm onSaved={handleSaved} onCancel={() => navigate('/')} showCancel showReset />
+
+        <IceConfigForm />
 
         <section className="update-section" data-testid="update-section">
           <h2 className="update-heading">{t('update.sectionTitle')}</h2>

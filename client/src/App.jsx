@@ -8,6 +8,7 @@ import LanguageSwitcher from './components/LanguageSwitcher';
 import './src/styles/hacker-theme.css';
 import { initSodium } from './crypto/libs'; // ✅ Import sodium initializer
 import { initServerUrl, resolveServerUrl } from './utils/serverUrl';
+import { initIceConfig } from './webrtc/iceServers';
 import { applyServerUrl } from './utils/socket';
 import I18nProvider from './i18n/I18nProvider';
 import { useI18n } from './i18n/context';
@@ -78,7 +79,7 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      await Promise.all([initServerUrl(), initLocale()]);
+      await Promise.all([initServerUrl(), initLocale(), initIceConfig()]);
       if (cancelled) return;
       setLocale(getLocale());
       const url = resolveServerUrl();

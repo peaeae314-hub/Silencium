@@ -71,6 +71,40 @@ export default {
   'settings.errPath': '只能使用協定 + 主機（不要路徑），例如 https://host:3001',
   'settings.errQuery': '請移除 URL 中的查詢字串和 #片段。',
 
+  'settings.iceTitle': '📡 WebRTC ICE / TURN',
+  'settings.iceCopy':
+    '直連通道使用 WebRTC。當雙方處於不相容的 NAT 後時，TURN 可協助打通。密文仍端到端加密——TURN 只能看到不透明封包與連線中繼資料。留空則使用內建 Open Relay 示範 TURN；也可貼上你自己的（例如免費 Metered 憑證）。',
+  'settings.iceDefaultHint':
+    '預設示範 TURN：<code>openrelay.metered.ca</code>，公開使用者名稱 <code>{user}</code>。自建部署請覆寫——示範營運商可見中繼資料。',
+  'settings.iceModeTurn': '自訂 TURN',
+  'settings.iceModeJson': 'ICE JSON',
+  'settings.turnUrlsLabel': 'TURN / STUN URL',
+  'settings.turnUrlsPlaceholder': 'turn:turn.example.com:3478\nturns:turn.example.com:443?transport=tcp',
+  'settings.turnUsernameLabel': 'TURN 使用者名稱',
+  'settings.turnUsernamePlaceholder': '使用者名稱',
+  'settings.turnCredentialLabel': 'TURN 憑證',
+  'settings.turnCredentialPlaceholder': '憑證',
+  'settings.turnHint':
+    '每行一個 URL（或逗號分隔）。仍會保留 Google STUN。儲存後會取代示範 TURN，直至清除。',
+  'settings.saveTurn': '儲存 TURN',
+  'settings.iceJsonLabel': 'ICE 伺服器 JSON',
+  'settings.iceJsonPlaceholder':
+    '[{ "urls": "stun:stun.l.google.com:19302" }, { "urls": "turn:…", "username": "…", "credential": "…" }]',
+  'settings.iceJsonHint':
+    '貼上完整的 <code>RTCIceServer[]</code> 陣列（例如 Metered 控制台提供的）。也可在建置時透過 <code>VITE_ICE_SERVERS_JSON</code> 設定。',
+  'settings.saveIceJson': '儲存 ICE JSON',
+  'settings.clearIce': '恢復示範預設',
+  'settings.iceSaved': 'ICE / TURN 設定已儲存。請重新加入房間後生效。',
+  'settings.iceCleared': '已清除 — 使用內建 Open Relay 示範 TURN。',
+  'settings.iceErrEmpty': '請貼上 ICE 伺服器 JSON 陣列。',
+  'settings.iceErrJson': 'ICE JSON 不是有效的 JSON。',
+  'settings.iceErrArray': 'ICE 伺服器必須是非空 JSON 陣列。',
+  'settings.iceErrEntry': '每個 ICE 項目必須是物件。',
+  'settings.iceErrUrls': '每個 ICE 項目需要 urls 字串或字串陣列。',
+  'settings.turnErrEnter': '請至少輸入一個 TURN URL。',
+  'settings.turnErrScheme': 'URL 必須以 turn:、turns:、stun: 或 stuns: 開頭。',
+  'settings.turnErrAuth': '需要 TURN 使用者名稱與憑證。',
+
   // --- 聊天 -------------------------------------------------------------
   'chat.title': '🔐 Silencium',
   'chat.leave': '離開聊天',

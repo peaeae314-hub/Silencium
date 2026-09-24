@@ -205,6 +205,24 @@ events (B11); it never receives the raw secret.
 
 This is **not** Perfect Forward Secrecy and **not** a claim of “no metadata”.
 
+### WebRTC DataChannel + TURN
+
+When ICE succeeds, message/image ciphertext prefers a **WebRTC DataChannel**
+(P2P). The client ships Google public STUNs plus a **demo Open Relay TURN**
+(`openrelay.metered.ca`, documented public credentials) so typical NATs can
+still open a channel. Override via Settings (TURN URL + username/credential, or
+a full ICE JSON array) or build-time `VITE_ICE_SERVERS_JSON`.
+
+- **TURN is not a decryptor.** Packets stay DTLS-encrypted / E2EE ciphertext;
+  a TURN operator can see connection metadata (IPs, timing, sizes), not
+  plaintext or room keys.
+- If ICE/TURN fails, Silencium **falls back** to the encrypted Socket.IO relay
+  automatically (same ciphertext frames).
+- **Residual limit:** an HTTP tunnel (e.g. Cloudflare Quick Tunnel) does **not**
+  carry UDP. TURN must be reachable on the public Internet on its own ports;
+  the Silencium relay URL is only for signaling + relay fallback.
+
+
 ### Room ids + room keys
 
 Room ids are 128 bits from the browser CSPRNG (`crypto.getRandomValues`),

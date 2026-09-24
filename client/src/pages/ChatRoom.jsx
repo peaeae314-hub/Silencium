@@ -18,6 +18,7 @@ import {
   MIN_ROOM_KEY_LENGTH,
 } from '../crypto/roomKey';
 import { createPeerTransport } from '../webrtc/peerTransport';
+import { resolveIceServers } from '../webrtc/iceServers';
 import CanvasImageRenderer from '../components/CanvasImageRenderer';
 import '../src/styles/hacker-theme.css';
 import useAutoScroll from '../src/hooks/useAutoScroll';
@@ -257,6 +258,7 @@ export default function ChatRoom() {
     const isInitiator = socket.id === [socket.id, receivedKey.current].sort()[1];
     const transport = createPeerTransport({
       isInitiator,
+      iceServers: resolveIceServers(),
       onSignal: (signal) => {
         socket.emit('webrtc-signal', { roomId, signal });
       },

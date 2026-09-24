@@ -73,6 +73,40 @@ export default {
   'settings.errPath': 'Use only scheme + host (no path), e.g. https://host:3001',
   'settings.errQuery': 'Remove the query string and #fragment from the URL.',
 
+  'settings.iceTitle': '📡 WebRTC ICE / TURN',
+  'settings.iceCopy':
+    'Direct peer channels use WebRTC. A TURN server helps when peers are behind incompatible NATs. Ciphertext stays end-to-end encrypted — TURN only sees opaque packets and connection metadata. Leave blank to use the built-in Open Relay demo TURN, or paste your own (e.g. a free Metered credential).',
+  'settings.iceDefaultHint':
+    'Default demo TURN: <code>openrelay.metered.ca</code> with public username <code>{user}</code>. Self-hosters should override — the demo operator sees metadata.',
+  'settings.iceModeTurn': 'Custom TURN',
+  'settings.iceModeJson': 'ICE JSON',
+  'settings.turnUrlsLabel': 'TURN / STUN URLs',
+  'settings.turnUrlsPlaceholder': 'turn:turn.example.com:3478\nturns:turn.example.com:443?transport=tcp',
+  'settings.turnUsernameLabel': 'TURN username',
+  'settings.turnUsernamePlaceholder': 'username',
+  'settings.turnCredentialLabel': 'TURN credential',
+  'settings.turnCredentialPlaceholder': 'credential',
+  'settings.turnHint':
+    'One URL per line (or comma-separated). Google STUNs stay included. Saved values replace the demo TURN until cleared.',
+  'settings.saveTurn': 'Save TURN',
+  'settings.iceJsonLabel': 'ICE servers JSON',
+  'settings.iceJsonPlaceholder':
+    '[{ "urls": "stun:stun.l.google.com:19302" }, { "urls": "turn:…", "username": "…", "credential": "…" }]',
+  'settings.iceJsonHint':
+    'Paste a full <code>RTCIceServer[]</code> array (as from a Metered dashboard). Also supported at build time via <code>VITE_ICE_SERVERS_JSON</code>.',
+  'settings.saveIceJson': 'Save ICE JSON',
+  'settings.clearIce': 'Use demo defaults',
+  'settings.iceSaved': 'ICE / TURN settings saved. Rejoin a room for them to take effect.',
+  'settings.iceCleared': 'Cleared — using built-in Open Relay demo TURN.',
+  'settings.iceErrEmpty': 'Paste an ICE servers JSON array.',
+  'settings.iceErrJson': 'ICE JSON is not valid JSON.',
+  'settings.iceErrArray': 'ICE servers must be a non-empty JSON array.',
+  'settings.iceErrEntry': 'Each ICE entry must be an object.',
+  'settings.iceErrUrls': 'Each ICE entry needs a urls string or string array.',
+  'settings.turnErrEnter': 'Enter at least one TURN URL.',
+  'settings.turnErrScheme': 'URLs must start with turn:, turns:, stun:, or stuns:.',
+  'settings.turnErrAuth': 'TURN username and credential are required.',
+
   // --- Chat -------------------------------------------------------------
   'chat.title': '🔐 Silencium',
   'chat.leave': 'Leave Chat',

@@ -22,9 +22,11 @@ No accounts, groups, calls, or stored history.
   events are limited per IP and per room; encrypted text frames capped at 64 KiB;
   client decrypt paths use `try/catch`.
 - **WebRTC DataChannel (plan ③)** for message/image ciphertext when ICE
-  succeeds (public STUN only). Socket.IO stays for signaling + membership and
-  is the automatic fallback when the data channel fails — no TURN hard
-  dependency.
+  succeeds. Prefers P2P (Google STUN + demo Open Relay TURN by default);
+  optional custom TURN / full ICE JSON in Settings or `VITE_ICE_SERVERS_JSON`.
+  Socket.IO stays for signaling + membership and is the automatic fallback when
+  the data channel fails. TURN operators see connection metadata only — payloads
+  remain E2EE; room keys never go on the wire.
 - Ephemeral rooms: in-memory, max 2 participants, destroyed on leave or
   disconnect (**60 s** reconnect grace, B14).
 - Room ids from the browser CSPRNG (`crypto.getRandomValues`, 128 bits,

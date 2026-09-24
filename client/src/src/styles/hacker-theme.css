@@ -774,3 +774,26 @@ button:hover {
   font-size: 0.7rem;
   color: var(--green-dim);
 }
+
+
+/* WebRTC ICE / TURN settings (Settings page) */
+.ice-section {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--green-dim);
+}
+
+.ice-textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  min-height: 4.5rem;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ice-mode-row button.ice-mode-active {
+  background: var(--green);
+  color: #000;
+  border-color: var(--green);
+}
