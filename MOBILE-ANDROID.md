@@ -7,11 +7,11 @@ same Vite build and talks to a **relay URL you enter in the app**.
 | | |
 |---|---|
 | **APK** | `dist-mobile/Silencium-debug.apk` |
-| **Size** | 4,840,040 bytes (≈ 4.6 MB) |
-| **SHA-256** | `e13ce3a95fccf85f16cc1d5f5eab5c326936fd2807f585985b4c21e34d3bb2da` |
+| **Size** | 4,851,322 bytes (≈ 4.6 MB) |
+| **SHA-256** | `f63dec0604e04b75005458de5085d013edeab5cdc15cd1249a460021fa19efa3` |
 | **App id** | `app.silencium.chat` |
 | **App name** | Silencium |
-| **Version** | 1.3.0 (versionCode 4) — `client/android/app/build.gradle` |
+| **Version** | 1.4.0 (versionCode 5) — `client/android/app/build.gradle` |
 | **min / target SDK** | 23 / 35 (Android 6.0+) |
 | **Build type** | `debug` (debug-signed, sideload only) |
 | **Plugins** | `@capacitor/app` 7.1.2, `@capacitor/browser` 7.0.5, `@capacitor/preferences` 7.0.4 |
