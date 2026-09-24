@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getSocketUrl } from '../utils/socket';
+import { loadLastRoom, saveLastRoom } from '../utils/lastRoom';
 import { useI18n } from '../i18n/context';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import {
@@ -65,8 +66,24 @@ export default function CreateRoom() {
   const [errorKey, setErrorKey] = useState('');
   const [showAdvancedRelay, setShowAdvancedRelay] = useState(false);
 
-  const goToRoom = (roomId, key) => {
+  // Prefill last-used room id/link + key (local only; key never in URL).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { lastRoomIdOrLink, lastRoomKey } = await loadLastRoom();
+      if (cancelled) return;
+      if (lastRoomKey) setRoomKey(lastRoomKey);
+      if (lastRoomIdOrLink) setRoomIdInput(lastRoomIdOrLink);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const goToRoom = (roomId, key, idOrLink = roomId) => {
     storeRoomKey(roomId, key);
+    // Fire-and-forget; navigation should not wait on Preferences.
+    void saveLastRoom({ lastRoomIdOrLink: idOrLink, lastRoomKey: key });
     navigate(`/chat?room=${encodeURIComponent(roomId)}`);
   };
 
@@ -95,7 +112,8 @@ export default function CreateRoom() {
       return;
     }
     setErrorKey('');
-    goToRoom(roomId, check.key);
+    // Prefer the pasted link/id so join-mode prefill restores what they typed.
+    goToRoom(roomId, check.key, roomIdInput.trim() || roomId);
   };
 
   const handleGenerateKey = () => {

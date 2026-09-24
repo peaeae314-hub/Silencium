@@ -269,6 +269,39 @@ button:hover {
   font-size: 0.95rem;
 }
 
+.server-url-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.server-url-row .server-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.server-clear {
+  flex-shrink: 0;
+  padding: 0.5rem 0.9rem;
+  min-height: 44px;
+  background: transparent;
+  border: 1px solid var(--green-dim);
+  color: var(--green-dim);
+  border-radius: 0.4rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.server-clear:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.server-clear:not(:disabled):hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+
 .server-hint {
   margin: 0;
   font-size: 0.75rem;

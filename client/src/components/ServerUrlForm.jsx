@@ -93,6 +93,15 @@ export default function ServerUrlForm({
     }
   };
 
+  // One-click clear: empty the field and forget the saved preference.
+  // Does not reload — user stays on Settings to enter a new URL.
+  const handleClearField = async () => {
+    setValue('');
+    setErrorKey('');
+    setTestResult(null);
+    await clearServerUrl();
+  };
+
   const handleReset = async () => {
     await clearServerUrl();
     // Re-run the boot resolution (native with no URL returns to first-launch).
@@ -104,22 +113,34 @@ export default function ServerUrlForm({
       <label className="server-label" htmlFor="server-url">
         {t('settings.relayLabel')}
       </label>
-      <input
-        id="server-url"
-        className="server-input"
-        type="url"
-        inputMode="url"
-        autoCapitalize="none"
-        autoCorrect="off"
-        spellCheck={false}
-        value={value}
-        onChange={(event) => {
-          setValue(event.target.value);
-          setErrorKey('');
-          setTestResult(null);
-        }}
-        placeholder={t('settings.placeholder')}
-      />
+      <div className="server-url-row">
+        <input
+          id="server-url"
+          className="server-input"
+          type="url"
+          inputMode="url"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          value={value}
+          onChange={(event) => {
+            setValue(event.target.value);
+            setErrorKey('');
+            setTestResult(null);
+          }}
+          placeholder={t('settings.placeholder')}
+        />
+        <button
+          type="button"
+          className="server-clear"
+          onClick={handleClearField}
+          disabled={busy || testing || !value}
+          title={t('settings.clear')}
+          aria-label={t('settings.clear')}
+        >
+          {t('settings.clear')}
+        </button>
+      </div>
       <p className="server-hint">{renderWithCode(t('settings.hint'))}</p>
 
       {errorKey && <p className="server-error">⚠ {t(errorKey)}</p>}

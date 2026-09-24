@@ -991,7 +991,7 @@ export default function ChatRoom() {
               ? t('chat.encryptionActive')
               : hasSharedKey
                 ? t('chat.authVerifying')
-                : t('chat.encryptionEstablishing')}
+                : t('chat.waitingForPeer')}
           {fingerprint && (
             <div className="fingerprint-code">
               {t('chat.fingerprintLabel')}: <strong>{fingerprint}</strong>
@@ -1053,7 +1053,13 @@ export default function ChatRoom() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-            placeholder={t('chat.typeMessage')}
+            placeholder={
+              canChat
+                ? t('chat.typeMessage')
+                : hasSharedKey
+                  ? t('chat.waitForEncryption')
+                  : t('chat.waitingForPeerPlaceholder')
+            }
             disabled={!canChat}
           />
           <button

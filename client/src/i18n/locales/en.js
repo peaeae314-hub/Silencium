@@ -83,6 +83,8 @@ export default {
   'chat.serverSettings': 'Server settings',
   'chat.encryptionActive': '🔒 Encryption Active',
   'chat.encryptionEstablishing': '⏳ Establishing Encryption...',
+  'chat.waitingForPeer': '⏳ Waiting for the other party…',
+  'chat.waitingForPeerPlaceholder': '> Waiting for the other party…',
   'chat.typeMessage': '> Type a message...',
   'chat.send': 'Send',
   'chat.attachImage': 'Attach image',

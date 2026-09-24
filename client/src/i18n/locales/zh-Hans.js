@@ -81,6 +81,8 @@ export default {
   'chat.serverSettings': '服务器设置',
   'chat.encryptionActive': '🔒 加密已启用',
   'chat.encryptionEstablishing': '⏳ 正在建立加密…',
+  'chat.waitingForPeer': '⏳ 等待对方加入…',
+  'chat.waitingForPeerPlaceholder': '> 等待对方加入…',
   'chat.typeMessage': '> 输入消息…',
   'chat.send': '发送',
   'chat.attachImage': '添加图片',
