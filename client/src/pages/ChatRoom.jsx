@@ -50,6 +50,15 @@ const newParticipantId = () => {
   }
 };
 
+
+/** Constant-time-ish equality for X25519 pubkey bytes (length is fixed/small). */
+const pubkeysEqual = (a, b) => {
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a[i] ^ b[i];
+  return diff === 0;
+};
+
 export default function ChatRoom() {
   const { t } = useI18n();
   // Socket listeners are registered once per room; `tRef` lets those long-lived
@@ -79,6 +88,9 @@ export default function ChatRoom() {
   const pendingVerifyRef = useRef(false);
   const markVerifiedRef = useRef(() => {});
   const completeVerifiedSessionRef = useRef(null);
+  const reemitAuthProofRef = useRef(null);
+  // Debounce same-pubkey help so verified↔stuck peers do not ping-pong proofs.
+  const lastProofHelpRef = useRef({ socketId: null, at: 0 });
   const startWebRtcIfNeededRef = useRef(null);
   const ingestCiphertextMessageRef = useRef(null);
   const ingestCiphertextImageRef = useRef(null);
@@ -457,6 +469,11 @@ export default function ChatRoom() {
       if (publicKey) {
         socket.emit('send-public-key', { roomId, publicKey: Array.from(publicKey) });
       }
+      // Peer may have missed our proof across a background drop; re-emit if we
+      // already hold session auth material (does not put the room key on the wire).
+      if (authKeyRef.current && theirPublicKeyRef.current && myPublicKeyRef.current) {
+        reemitAuthProofRef.current?.();
+      }
     };
 
     const handleVisibility = () => {
@@ -508,6 +525,12 @@ export default function ChatRoom() {
         });
       }
 
+      // Same as resume: if we already derived auth material, re-emit proof so a
+      // peer that reconnects after us is not stuck on verifying forever.
+      if (authKeyRef.current && theirPublicKeyRef.current && myPublicKeyRef.current) {
+        reemitAuthProofRef.current?.();
+      }
+
       setTimeout(() => {
         if (!hasSharedKeyRef.current && myPublicKey) {
           socket.emit('send-public-key', {
@@ -535,8 +558,17 @@ export default function ChatRoom() {
     };
 
     const handleReconnect = () => {
-      if (roomId) {
-        socket.emit('join-room', { roomId, participantId: participantIdRef.current });
+      if (!roomId) return;
+      socket.emit('join-room', { roomId, participantId: participantIdRef.current });
+      const publicKey = myPublicKeyRef.current;
+      if (publicKey) {
+        socket.emit('send-public-key', {
+          roomId,
+          publicKey: Array.from(publicKey),
+        });
+      }
+      if (authKeyRef.current && theirPublicKeyRef.current && myPublicKeyRef.current) {
+        reemitAuthProofRef.current?.();
       }
     };
 
@@ -646,6 +678,26 @@ export default function ChatRoom() {
     [roomId, pushSystem]
   );
 
+  // Re-send auth proof without re-deriving. Needed when a peer reconnects or
+  // late-joins after we are already verified — they may have missed our proof.
+  const reemitAuthProof = useCallback(async () => {
+    const worker = cryptoWorkerRef.current;
+    const authKey = authKeyRef.current;
+    const theirPk = theirPublicKeyRef.current;
+    const myPk = myPublicKeyRef.current;
+    if (!worker || !authKey || !theirPk || !myPk || !roomId) return;
+    try {
+      const proof = await worker.computeAuthProof(authKey, roomId, myPk, theirPk);
+      socket.emit('send-auth-proof', {
+        roomId,
+        proof: Array.from(proof),
+      });
+    } catch (err) {
+      console.error('Failed to re-emit auth proof:', err);
+    }
+  }, [roomId]);
+
+
   const markVerified = useCallback(() => {
     if (verifiedRef.current) return;
     verifiedRef.current = true;
@@ -678,6 +730,10 @@ export default function ChatRoom() {
   useEffect(() => {
     completeVerifiedSessionRef.current = completeVerifiedSession;
   }, [completeVerifiedSession]);
+
+  useEffect(() => {
+    reemitAuthProofRef.current = reemitAuthProof;
+  }, [reemitAuthProof]);
 
   useEffect(() => {
     startWebRtcIfNeededRef.current = startWebRtcIfNeeded;
@@ -725,13 +781,56 @@ export default function ChatRoom() {
       });
 
       socket.on('receive-public-key', async ({ publicKey, theirSocketId }) => {
-        if (receivedKey.current === theirSocketId && theirPublicKeyRef.current) return;
+        const decodedKey = new Uint8Array(publicKey);
+        const samePk = pubkeysEqual(theirPublicKeyRef.current, decodedKey);
+
+        // Always track the peer's current socket id (reconnect may change it).
         receivedKey.current = theirSocketId;
+
+        if (samePk) {
+          // Same peer identity. If we already hold auth material, the peer may
+          // be stuck after a reconnect — re-send our pubkey + auth proof so
+          // they can finish. Do not re-derive (socket-id order / isClient may
+          // have flipped and would desync the session key).
+          if (authKeyRef.current && myPublicKeyRef.current) {
+            const now = Date.now();
+            const last = lastProofHelpRef.current;
+            if (last.socketId === theirSocketId && now - last.at < 3000) {
+              return;
+            }
+            lastProofHelpRef.current = { socketId: theirSocketId, at: now };
+            if (myPublicKeyRef.current) {
+              socket.emit('send-public-key', {
+                roomId,
+                publicKey: Array.from(myPublicKeyRef.current),
+              });
+            }
+            // Re-emit proof so a late/reconnecting peer is not left hanging.
+            await reemitAuthProofRef.current?.();
+            return;
+          }
+          // Stored their pubkey but never finished deriving — retry below.
+        } else if (theirPublicKeyRef.current) {
+          // Peer pubkey changed — reset local session and re-handshake.
+          verifiedRef.current = false;
+          setVerified(false);
+          hasSharedKeyRef.current = false;
+          setHasSharedKey(false);
+          sharedKeyRef.current = null;
+          authKeyRef.current = null;
+          fingerprintRef.current = '';
+          setFingerprint('');
+          pendingAuthProofRef.current = null;
+          pendingVerifyRef.current = false;
+          setAuthFailed(false);
+          peerTransportRef.current?.close();
+          peerTransportRef.current = null;
+          setTransport('socket');
+        }
 
         const isClient = socket.id === [socket.id, theirSocketId].sort()[1];
 
         try {
-          const decodedKey = new Uint8Array(publicKey);
           theirPublicKeyRef.current = decodedKey;
           await completeVerifiedSessionRef.current(decodedKey, isClient);
         } catch (err) {
