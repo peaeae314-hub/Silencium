@@ -24,6 +24,7 @@ import '../src/styles/hacker-theme.css';
 import useAutoScroll from '../src/hooks/useAutoScroll';
 import { useI18n } from '../i18n/context';
 import { renderWithCode } from '../i18n/richText';
+import { claimCreateIntent } from '../utils/roomIntent';
 
 // Payload limits — kept aligned with server/app.js (MAX_IMAGE_BYTES /
 // MAX_SOCKET_FRAME_BYTES). Images are compressed below, encrypted, then sent
@@ -120,6 +121,24 @@ export default function ChatRoom() {
   const roomId = params.get('room');
   const fileInputRef = useRef(null);
   const imageHandlersRegistered = useRef(false);
+
+  // One-shot "this page instance is creating the room" claim. Only the FIRST
+  // join-room of this mount may carry intent:'create'; a refresh, reconnect or
+  // foreground resume re-claims nothing and sends a plain join. (See roomIntent.js.)
+  const pendingCreateIntentRef = useRef(null);
+  if (pendingCreateIntentRef.current === null) {
+    pendingCreateIntentRef.current = claimCreateIntent(roomId);
+  }
+  // CreateRoom's navigation state, kept for routing a refusal back to the form.
+  const initialNavStateRef = useRef(location.state);
+  // Stable accessor: the long-lived socket listeners read the live create flag
+  // without needing it in their dependency arrays. Returns 'create' once.
+  const nextJoinIntentRef = useRef(() => 'join');
+  nextJoinIntentRef.current = () => {
+    if (!pendingCreateIntentRef.current) return 'join';
+    pendingCreateIntentRef.current = false;
+    return 'create';
+  };
 
   // Room key gate — passphrase stays in sessionStorage, never in the URL.
   const [keyGateValue, setKeyGateValue] = useState('');
@@ -466,7 +485,11 @@ export default function ChatRoom() {
 
     const resume = () => {
       if (!socket.connected) socket.connect();
-      socket.emit('join-room', { roomId, participantId: participantIdRef.current });
+      socket.emit('join-room', {
+        roomId,
+        participantId: participantIdRef.current,
+        intent: nextJoinIntentRef.current(),
+      });
       const publicKey = myPublicKeyRef.current;
       if (publicKey) {
         socket.emit('send-public-key', { roomId, publicKey: Array.from(publicKey) });
@@ -517,13 +540,22 @@ export default function ChatRoom() {
 
     const handleConnect = () => {
       setMySocketId(socket.id);
-      socket.emit('join-room', { roomId, participantId: participantIdRef.current });
+      socket.emit('join-room', {
+        roomId,
+        participantId: participantIdRef.current,
+        intent: nextJoinIntentRef.current(),
+      });
       setEncryptionStatus('socket-connected');
 
-      if (myPublicKey) {
+      // Read the ref, not the render-time prop: a room can be entered before
+      // key generation finishes, and the connect/retry must still be able to
+      // send the key that arrives a moment later (otherwise both peers can wait
+      // for each other forever on a very fast join).
+      const publicKey = myPublicKeyRef.current;
+      if (publicKey) {
         socket.emit('send-public-key', {
           roomId,
-          publicKey: Array.from(myPublicKey),
+          publicKey: Array.from(publicKey),
         });
       }
 
@@ -534,10 +566,11 @@ export default function ChatRoom() {
       }
 
       setTimeout(() => {
-        if (!hasSharedKeyRef.current && myPublicKey) {
+        const latestKey = myPublicKeyRef.current;
+        if (!hasSharedKeyRef.current && latestKey) {
           socket.emit('send-public-key', {
             roomId,
-            publicKey: Array.from(myPublicKey),
+            publicKey: Array.from(latestKey),
           });
         }
       }, 1500);
@@ -561,7 +594,11 @@ export default function ChatRoom() {
 
     const handleReconnect = () => {
       if (!roomId) return;
-      socket.emit('join-room', { roomId, participantId: participantIdRef.current });
+      socket.emit('join-room', {
+        roomId,
+        participantId: participantIdRef.current,
+        intent: nextJoinIntentRef.current(),
+      });
       const publicKey = myPublicKeyRef.current;
       if (publicKey) {
         socket.emit('send-public-key', {
@@ -671,9 +708,11 @@ export default function ChatRoom() {
           setHasSharedKey(false);
           pushSystem(tRef.current('chat.authFailed'));
         } else {
-          // markVerified is defined below; call via verified path after render.
-          // Use a microtask so the callback identity is available.
+          // The pendingVerify effect can already have run for the
+          // hasSharedKey/fingerprint updates queued above, so call markVerified
+          // directly as well. `verifiedRef` keeps this idempotent.
           pendingVerifyRef.current = true;
+          markVerifiedRef.current?.();
         }
       }
     },
@@ -757,7 +796,11 @@ export default function ChatRoom() {
       if (!socket.connected) socket.connect();
 
       if (socket.connected) {
-        socket.emit('join-room', { roomId, participantId: participantIdRef.current });
+        socket.emit('join-room', {
+          roomId,
+          participantId: participantIdRef.current,
+          intent: nextJoinIntentRef.current(),
+        });
       }
 
       socket.on('room-destroyed', ({ message }) => {
@@ -913,7 +956,30 @@ export default function ChatRoom() {
         });
       });
 
-      socket.on('join-error', (msg) => {
+      socket.on('join-error', (msg, meta) => {
+        const code = meta && meta.code;
+        if (code === 'ROOM_OCCUPIED' || code === 'INVALID_ROOM_ID') {
+          // Never enter the room. Hand the value back to the create/join form,
+          // which shows a translated inline error and preserves the input.
+          peerTransportRef.current?.close();
+          peerTransportRef.current = null;
+          if (socket.connected) socket.disconnect();
+          const cameFromCreate = initialNavStateRef.current?.intent === 'create';
+          navigate('/', {
+            replace: true,
+            state: {
+              rejectedCreate: {
+                code,
+                roomId,
+                mode: cameFromCreate ? 'create' : 'join',
+              },
+              revertedLastRoom:
+                initialNavStateRef.current?.revertedLastRoom || null,
+            },
+          });
+          return;
+        }
+        // Legacy relay (no code) or other errors keep the original behaviour.
         alert(`❌ ${msg}`);
         navigate('/');
       });
