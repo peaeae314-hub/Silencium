@@ -1,20 +1,60 @@
+// Room-id format — duplicated from the client shared module
+// `client/src/utils/roomId.js` (ROOM_ID_PATTERN / isValidRoomId). The relay is
+// CommonJS and cannot import that ESM file, so KEEP THE TWO IN SYNC. A room id
+// is a join capability, so reject anything that is not 4–64 URL-safe chars.
+const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{4,64}$/;
+
 const rooms = {};
 
-function joinRoom(roomId, socketId) {
-  if (!rooms[roomId]) rooms[roomId] = [];
+/** True when `roomId` is exactly the accepted 4–64 char URL-safe format. */
+function isValidRoomId(roomId) {
+  return typeof roomId === 'string' && ROOM_ID_PATTERN.test(roomId);
+}
 
-  // Idempotent: a repeated `join-room` from the same socket (e.g. the client's
-  // connect handler plus an explicit re-join on resume) must not consume the
-  // second seat with a duplicate id.
-  if (rooms[roomId].includes(socketId)) {
-    return { users: rooms[roomId] };
+/** True when `roomId` is present and still has at least one held seat. */
+function roomExists(roomId) {
+  return (
+    Object.prototype.hasOwnProperty.call(rooms, roomId) &&
+    rooms[roomId].length > 0
+  );
+}
+
+/**
+ * Join (or create) a room.
+ *
+ * `options.intent === 'create'` is a create request from the client: if the
+ * room already holds a member other than this socket — including a seat held
+ * by the B14 reconnect grace — it is refused with `ROOM_OCCUPIED` and the room
+ * is left untouched. Any other intent (or none) keeps the original
+ * auto-create/join behaviour.
+ *
+ * @returns {{ users: string[] } | { error: string, code?: string }}
+ */
+function joinRoom(roomId, socketId, options = {}) {
+  const intent = options.intent;
+  const existing = rooms[roomId];
+
+  if (existing) {
+    // Idempotent: a repeated join, or a duplicate intent:'create' from the same
+    // socket (the client's connect handler racing its first setup), must not
+    // consume a second seat or look "occupied".
+    if (existing.includes(socketId)) {
+      return { users: existing };
+    }
+
+    if (intent === 'create') {
+      return { error: 'Room ID is already taken', code: 'ROOM_OCCUPIED' };
+    }
+
+    if (existing.length >= 2) {
+      return { error: 'Room is full', code: 'ROOM_FULL' };
+    }
+
+    existing.push(socketId);
+    return { users: existing };
   }
 
-  if (rooms[roomId].length >= 2) {
-    return { error: 'Room is full' };
-  }
-
-  rooms[roomId].push(socketId);
+  rooms[roomId] = [socketId];
   return { users: rooms[roomId] };
 }
 
@@ -87,5 +127,7 @@ module.exports = {
   getUsers,  // ✅ export it here
   deleteRoom,
   replaceUser,
-  removeUser
+  removeUser,
+  isValidRoomId,
+  roomExists,
 };

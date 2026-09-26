@@ -152,6 +152,16 @@ function rejectsSecretFields(payload) {
   return banned.some((k) => Object.prototype.hasOwnProperty.call(payload, k));
 }
 
+/**
+ * Emit a join refusal. The English message stays the first argument so existing
+ * clients (which only read that) keep working; new clients read the machine
+ * code from the second argument and show a translated message.
+ */
+function emitJoinError(socket, message, code) {
+  if (code) socket.emit('join-error', message, { code });
+  else socket.emit('join-error', message);
+}
+
 app.use(cors());
 
 // Liveness probe — works in both dev and production.
@@ -205,19 +215,25 @@ io.on('connection', (socket) => {
   // 🏠 JOIN ROOM
   socket.on('join-room', (payload = {}) => {
     if (rejectsSecretFields(payload)) {
-      socket.emit('join-error', 'Do not send the room key to the server');
+      emitJoinError(socket, 'Do not send the room key to the server', 'SECRET_FIELD');
       return;
     }
 
-    const { roomId, participantId } = payload;
-    if (!roomId || typeof roomId !== 'string') {
-      socket.emit('join-error', 'Invalid room ID');
+    const { roomId, participantId, intent } = payload;
+    // Format gate (create and join alike). Random 22-char base64url ids and old
+    // invite links satisfy this; malformed ids are refused before any state.
+    if (!roomId || typeof roomId !== 'string' || !roomManager.isValidRoomId(roomId)) {
+      emitJoinError(socket, 'Invalid room ID', 'INVALID_ROOM_ID');
       return;
     }
 
     const limited = rateLimit.allowJoin(socket, roomId);
     if (!limited.ok) {
-      socket.emit('join-error', 'Too many join attempts. Slow down and try again.');
+      emitJoinError(
+        socket,
+        'Too many join attempts. Slow down and try again.',
+        'RATE_LIMITED'
+      );
       return;
     }
 
@@ -246,10 +262,13 @@ io.on('connection', (socket) => {
     // capacity is checked, so a resume never hits "Room is full".
     const reclaimedFrom = reclaimPendingDisconnect(roomId, socket.id, socket.data.participantId);
 
-    const result = roomManager.joinRoom(roomId, socket.id);
+    // `intent:'create'` is only used to refuse creating over an occupied room;
+    // a successful reclaim above already made this socket a member, so the
+    // create intent is treated as an idempotent success by roomManager.
+    const result = roomManager.joinRoom(roomId, socket.id, { intent });
 
     if (result.error) {
-      socket.emit('join-error', result.error);
+      emitJoinError(socket, result.error, result.code);
       return;
     }
 
