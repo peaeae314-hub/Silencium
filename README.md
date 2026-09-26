@@ -15,6 +15,9 @@ before trusting it with anything sensitive.
   receiving device.
 - **🚪 Ephemeral rooms** — a room exists in server memory only, holds at most two
   participants, and is destroyed when someone leaves or disconnects.
+- **🏷️ Optional custom room ids** — keep the random 128-bit id, or name the room
+  yourself (`A–Z a–z 0–9 - _`, 4–64 chars). A `create` that hits an already
+  occupied id is refused inline, and short ids warn that they are easier to guess.
 - **📎 Encrypted image sharing** — images are compressed, encrypted, and sent as
   binary ciphertext, then rendered inline.
 - **👥 No accounts** — anonymous, no registration, no login.
@@ -231,6 +234,14 @@ The **room key** is a separate shared secret: invite links encode the room id
 only; share the key out-of-band. Anyone with the link can still occupy the
 second seat, but without the matching key they cannot pass verification.
 
+On the create form you may instead type an **optional custom room id** matching
+`^[A-Za-z0-9_-]{4,64}$`. Both the relay and the join form enforce that format.
+Creating a room whose id is already occupied is refused (the creator is returned
+to the form with an inline message) — joining an existing room is unchanged, and
+a creator's own reconnect/foreground-resume/refresh is never treated as a new
+create. Ids shorter than 8 characters are allowed but flagged as easy to guess,
+because the room id alone lets someone reach the second seat.
+
 ### Retained plaintext (ops)
 
 `ops/retained/` is **not** enabled by the normal relay. It exists only for
@@ -256,9 +267,13 @@ plaintext retention into `server/app.js`.
 
 1. On the home page, open **Create**, enter or **Generate** a room key (≥12
    chars / 128-bit generated), then create the room.
-2. A 128-bit random room id is put in the URL; the key stays in session storage.
-3. Share the invite link **and** the room key (separately) with your contact.
-4. You do not need to paste a tunnel/relay URL for normal browser use (same
+2. Optionally type a **custom room id** (`4–64` chars from `A–Z a–z 0–9 - _`).
+   Leave it blank for the random 128-bit id. A create aimed at an id that is
+   already in use is refused inline and returns you to the form with your input
+   intact; ids under 8 characters are allowed but warned as easy to guess.
+3. The room id is put in the URL; the key stays in session storage.
+4. Share the invite link **and** the room key (separately) with your contact.
+5. You do not need to paste a tunnel/relay URL for normal browser use (same
    origin in production). Settings still allow an advanced override.
 
 ### Joining a room

@@ -31,6 +31,14 @@ No accounts, groups, calls, or stored history.
   disconnect (**60 s** reconnect grace, B14).
 - Room ids from the browser CSPRNG (`crypto.getRandomValues`, 128 bits,
   base64url) — see B12 in `CUT-PROGRESS.md`.
+- **Optional custom room ids (v1.5.0):** the create form accepts a human-chosen
+  id (`^[A-Za-z0-9_-]{4,64}$`), enforced on both the client and the relay. The
+  first join from the create page carries a one-shot `intent: 'create'`; if the
+  id is already occupied — including a seat held by the B14 reconnect grace —
+  the create is refused with a machine-readable `ROOM_OCCUPIED` code and the
+  form shows an inline message, while ordinary joins are unchanged. A creator's
+  own reconnect / foreground resume / refresh / duplicate join is never treated
+  as a new create. Ids under 8 characters warn as easy to guess.
 - System messages for room created / joined / key ready / room destroyed.
 - Terminal-style dark UI, mobile-responsive layout, autoscroll.
 - Production single-process serving: `NODE_ENV=production node app.js` serves

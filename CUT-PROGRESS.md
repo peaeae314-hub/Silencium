@@ -573,3 +573,39 @@ second seat.
 > Out of scope for B14 (unchanged): the "Establishing Encryption…" hang when
 > alone / lost public-key races, room capacity, crypto, and the update system.
 
+---
+
+## 10. v1.5.0 — optional custom room ids + occupied-create guard
+
+Follow-up to B12/B14. A room id is still a join capability, but the create form
+now accepts an optional human-chosen id.
+
+- **Format:** `^[A-Za-z0-9_-]{4,64}$`, enforced by the relay
+  (`server/rooms/roomManager.js`) and the join/create forms
+  (`client/src/utils/roomId.js`, deliberately duplicated with cross-comments).
+- **Create intent:** `CreateRoom` arms a one-shot `sessionStorage` marker; the
+  first `join-room` of a `ChatRoom` instance sends `intent: 'create'` and the
+  marker is consumed. Reconnects, foreground resumes, duplicate joins, and page
+  refreshes send plain joins.
+- **Occupied:** `roomManager.joinRoom(roomId, socketId, { intent })` returns
+  `{ error, code: 'ROOM_OCCUPIED' }` when a create targets a room that already
+  holds another socket (including a B14 grace-held seat). Reclaims and
+  same-socket repeats stay idempotent, so the creator's own reconnect is never
+  refused. `join-error` now carries a second `{ code }` argument
+  (`ROOM_OCCUPIED` / `INVALID_ROOM_ID` / `ROOM_FULL` / `RATE_LIMITED` /
+  `SECRET_FIELD`) while the first English message keeps old clients working.
+- **Client UX:** `ROOM_OCCUPIED` / `INVALID_ROOM_ID` return to the form with an
+  inline translated error (no `alert`), preserving the typed id and key.
+- **Incidental crypto races fixed (surfaced by the reject→rejoin flow):** the
+  crypto worker now installs `onmessage` synchronously before `await
+  sodium.ready` (a fast re-join could post before the replacement worker was
+  ready and lose the message), the public-key retry reads the live ref, and a
+  queued auth proof calls `markVerified` directly instead of relying on an
+  effect that may already have run.
+- **Verification:** `tools/room-id-unit-test.cjs` **34/0**;
+  `tools/custom-room-id-test.cjs` **36/0**; existing smoke **16/0**, b14 **8/0**,
+  update-logic **36/0**, update-e2e **39/0** (stale hard-coded installed-version
+  expectations replaced); browser smoke **9/0** with screenshots in
+  `screens/custom-room-id/`; `npx eslint src scripts` exit 0; web build exit 0;
+  APK `versionCode 6` / `1.5.0`.
+
