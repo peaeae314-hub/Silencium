@@ -1,6 +1,10 @@
 import sodium from 'libsodium-wrappers';
 
-await sodium.ready;
+// libsodium's WASM/asm.js init is asynchronous. Install the message handler
+// SYNCHRONOUSLY, before waiting on it, so a request that arrives while the
+// worker is still initializing is not dropped (e.g. a fast re-join posts a
+// deriveAuthKey before the previous worker's replacement is ready).
+const sodiumReady = sodium.ready;
 
 const AUTH_CONTEXT = 'silencium-v1-auth';
 // Standard `libsodium-wrappers` (non-sumo) does not ship crypto_pwhash.
@@ -64,6 +68,7 @@ self.onmessage = async (e) => {
   const { id, type, data } = e.data;
 
   try {
+    await sodiumReady;
     switch (type) {
       case 'generateKeyPair': {
         const keyPair = sodium.crypto_kx_keypair();
