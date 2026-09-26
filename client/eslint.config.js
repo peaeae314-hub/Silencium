@@ -5,7 +5,15 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // `dist` is the Vite output; the Capacitor copies under `android/` are the
+  // same generated, minified bundles. Lint source only — these are build
+  // artifacts, not code we author.
+  globalIgnores([
+    'dist',
+    'android/app/src/main/assets/public',
+    'android/app/build',
+    'android/capacitor-cordova-android-plugins',
+  ]),
   {
     files: ['**/*.{js,jsx}'],
     extends: [
