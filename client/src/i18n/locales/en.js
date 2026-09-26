@@ -17,6 +17,17 @@ export default {
   'home.joinAria': 'Invite link or room id',
   'home.joinButton': 'Join',
   'home.joinError': 'Paste an invite link or a room id.',
+  'home.customRoomIdLabel': 'Custom room id (optional)',
+  'home.customRoomIdPlaceholder': 'e.g. team-alpha-2026 — leave blank for a random id',
+  'home.customRoomIdHint':
+    'The room id is the join credential: anyone who knows it can try to join, so longer random ids are harder to guess.',
+  'home.customRoomIdInvalid':
+    'Room id may only contain letters, digits, - and _, and must be 4–64 characters.',
+  'home.customRoomIdShortWarn':
+    'Room id is short and easy to guess — 8 or more characters is safer.',
+  'home.roomIdOccupied': 'That room id is already taken. Choose another one.',
+  'home.invalidRoomId':
+    'That room id is not valid. Use 4–64 letters, digits, - or _.',
   'home.feature.noAccounts': 'No Accounts, Ever',
   'home.feature.noLogs': 'No Logs/Data Storage',
   'home.feature.selfDestruct': 'Self-Destructing Chats',
