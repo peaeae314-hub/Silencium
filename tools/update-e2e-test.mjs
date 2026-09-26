@@ -25,8 +25,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+// The installed version is whatever `npm run build` baked into the bundle;
+// derive the expected label instead of hardcoding an old release number.
+import { APP_VERSION_NAME, APP_VERSION_CODE } from '../client/src/update/appVersion.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const INSTALLED_LABEL = `${APP_VERSION_NAME} (${APP_VERSION_CODE})`;
 const DIST = path.join(ROOT, 'client', 'dist');
 const PORT = Number(process.env.E2E_PORT || 3210);
 const CDP_PORT = Number(process.env.E2E_CDP_PORT || 9222);
@@ -350,7 +354,7 @@ const seedStorage = `(() => {
     if (shown) {
       const text = await cdp.eval(dialogText);
       check('dialog shows the remote versionName + versionCode', text.includes('9.9.9') && text.includes('999'), text);
-      check('dialog shows the installed version', text.includes('1.1.0') && text.includes('(2)'), text);
+      check('dialog shows the installed version', text.includes(APP_VERSION_NAME) && text.includes(`(${APP_VERSION_CODE})`), text);
       check('dialog shows the English changelog', text.includes('E2E english changelog'));
       check('dialog title is translated (en)', text.includes('Update available'));
       check('dialog offers Update / Later / Skip', (await cdp.eval(hasButton('update'))) && (await cdp.eval(hasButton('later'))) && (await cdp.eval(hasButton('skip'))));
@@ -436,7 +440,7 @@ const seedStorage = `(() => {
     await cdp.waitFor(`!!document.querySelector('[data-testid="update-section"]')`, { timeoutMs: 15000 });
     await sleep(2000);
     check('remote == installed → no launch prompt', !(await cdp.eval(`!!${DIALOG}`)));
-    check('Settings shows the installed version', (await cdp.eval(`document.querySelector('.update-installed')?.innerText || ''`)).includes('1.1.0 (2)'));
+    check('Settings shows the installed version', (await cdp.eval(`document.querySelector('.update-installed')?.innerText || ''`)).includes(INSTALLED_LABEL));
     check('web build gets the "sideload only" note in Settings', await cdp.eval(`!!document.querySelector('[data-testid="update-web-note"]')`));
     await cdp.eval(`document.querySelector('[data-testid="update-check"]').click()`);
     const resultShown = await cdp.waitFor(
