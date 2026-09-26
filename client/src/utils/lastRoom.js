@@ -33,6 +33,19 @@ async function storageSet(key, value) {
   }
 }
 
+async function storageRemove(key) {
+  try {
+    await Preferences.remove({ key });
+  } catch {
+    /* fall through to localStorage */
+  }
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 /** Load last room id/link and key for home-form prefill. */
 export async function loadLastRoom() {
   const [lastRoomIdOrLink, lastRoomKey] = await Promise.all([
@@ -52,4 +65,29 @@ export async function saveLastRoom({ lastRoomIdOrLink, lastRoomKey }) {
   const key = typeof lastRoomKey === 'string' ? lastRoomKey.trim() : '';
   if (idOrLink) await storageSet(LAST_ROOM_ID_OR_LINK_KEY, idOrLink);
   if (key) await storageSet(LAST_ROOM_KEY_KEY, key);
+}
+
+/** Forget the remembered room id/link and key. */
+export async function clearLastRoom() {
+  await storageRemove(LAST_ROOM_ID_OR_LINK_KEY);
+  await storageRemove(LAST_ROOM_KEY_KEY);
+}
+
+/**
+ * Restore a snapshot captured before a create attempt. Used when the relay
+ * refuses the create (occupied / invalid room id) so the refused id is not
+ * offered as the remembered join target.
+ */
+export async function restoreLastRoom(snapshot) {
+  await clearLastRoom();
+  if (!snapshot) return;
+  const idOrLink =
+    typeof snapshot.lastRoomIdOrLink === 'string'
+      ? snapshot.lastRoomIdOrLink.trim()
+      : '';
+  const key =
+    typeof snapshot.lastRoomKey === 'string' ? snapshot.lastRoomKey.trim() : '';
+  if (idOrLink || key) {
+    await saveLastRoom({ lastRoomIdOrLink: idOrLink, lastRoomKey: key });
+  }
 }

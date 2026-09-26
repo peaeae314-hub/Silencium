@@ -316,6 +316,14 @@ button:hover {
   line-height: 1.4;
 }
 
+/* Non-blocking hint: short custom room id (still allowed). */
+.room-id-warning {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #ffcc00;
+  line-height: 1.4;
+}
+
 .server-ok {
   margin: 0;
   font-size: 0.8rem;
